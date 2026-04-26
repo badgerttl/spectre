@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Spectre</title>
+  <link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<div id="app">
+
+  <nav id="tab-bar">
+    <button class="tab-btn active" data-tab="cookies">Cookies</button>
+    <button class="tab-btn" data-tab="storage">Storage</button>
+    <button class="tab-btn" data-tab="jwt">JWT</button>
+    <button class="tab-btn" data-tab="recon">Recon</button>
+    <button class="tab-btn" data-tab="profiles">Profiles</button>
+    <button class="tab-btn" data-tab="tools">Tools</button>
+    <button class="tab-btn" data-tab="payloads">Payloads</button>
+  </nav>
+
+  <!-- ═══ COOKIES ═══════════════════════════════════════════════════════ -->
+  <div id="tab-cookies" class="tab-pane active">
+    <div class="toolbar">
+      <button id="cookies-refresh">⟳ Refresh</button>
+      <button id="cookies-add">+ Add</button>
+      <button id="cookies-clear" class="danger">Clear</button>
+      <input id="cookies-filter" placeholder="Filter name / value…" autocomplete="off">
+    </div>
+    <div class="stor-list">
+      <div id="cookies-body"></div>
+    </div>
+  </div>
+
+  <!-- ═══ STORAGE ═══════════════════════════════════════════════════════ -->
+  <div id="tab-storage" class="tab-pane hidden">
+    <div class="toolbar">
+      <button id="storage-refresh">⟳ Refresh</button>
+      <button id="storage-add">+ Add</button>
+      <button id="storage-clear-btn" class="danger">Clear</button>
+      <input id="storage-filter" placeholder="Filter key / value…" autocomplete="off">
+    </div>
+    <div class="toolbar storage-switch-bar">
+      <button id="storage-switch-local" class="primary">localStorage</button>
+      <button id="storage-switch-session">sessionStorage</button>
+      <span id="local-count" class="stor-count">0</span>
+      <span id="session-count" class="stor-count hidden">0</span>
+    </div>
+
+    <div id="local-panel" class="stor-list">
+      <div id="local-body"></div>
+    </div>
+
+    <div id="session-panel" class="stor-list hidden">
+      <div id="session-body"></div>
+    </div>
+  </div>
+
+  <!-- ═══ JWT ══════════════════════════════════════════════════════════ -->
+  <div id="tab-jwt" class="tab-pane hidden">
+    <div class="jwt-input-row">
+      <textarea id="jwt-input" placeholder="Paste JWT token here…" rows="6"></textarea>
+      <div class="jwt-input-actions">
+        <button id="jwt-decode-btn" class="primary">Decode</button>
+        <button id="jwt-clear-btn">Clear</button>
+      </div>
+    </div>
+
+    <div id="jwt-sections" class="hidden">
+      <div class="jwt-cols">
+        <div class="jwt-col">
+          <div class="section-label">Header <span class="dim">(editable)</span></div>
+          <textarea id="jwt-header" rows="12" spellcheck="false"></textarea>
+        </div>
+        <div class="jwt-col">
+          <div class="section-label">Payload <span class="dim">(editable)</span></div>
+          <textarea id="jwt-payload" rows="12" spellcheck="false"></textarea>
+        </div>
+      </div>
+
+      <div class="jwt-sign-row">
+        <label>Algorithm
+          <select id="jwt-alg">
+            <option value="hs256">HS256</option>
+            <option value="none">none</option>
+            <option value="None">None</option>
+            <option value="NONE">NONE</option>
+            <option value="nOnE">nOnE</option>
+            <option value="NoNe">NoNe</option>
+            <option value="nonE">nonE</option>
+          </select>
+        </label>
+        <div id="jwt-secret-wrap">
+          <label>Secret<input id="jwt-secret" placeholder="HMAC secret" autocomplete="off"></label>
+        </div>
+        <button id="jwt-sign-btn" class="primary">Sign / Forge</button>
+        <button id="jwt-verify-btn">Verify</button>
+      </div>
+
+      <div id="jwt-verify-result" class="hidden"></div>
+
+      <div class="section-label">Output Token</div>
+      <textarea id="jwt-output" rows="6" readonly spellcheck="false"></textarea>
+      <div class="row-actions">
+        <button id="jwt-copy-btn" title="Copy" aria-label="Copy">⧉</button>
+        <button id="jwt-use-btn">Use as Input</button>
+        <button id="jwt-to-cookie-btn" class="primary hidden">› Send back to Cookie</button>
+      </div>
+      <div id="jwt-cookie-source" class="jwt-cookie-source hidden"></div>
+    </div>
+  </div>
+
+  <!-- ═══ RECON ══════════════════════════════════════════════════════════ -->
+  <div id="tab-recon" class="tab-pane hidden">
+    <div class="toolbar">
+      <button id="recon-run-all" class="primary">Run All</button>
+      <button id="recon-copy-all">Copy All</button>
+      <button id="recon-tech">Tech Stack</button>
+      <button id="recon-source">Source Scan</button>
+      <button id="recon-links">Spider Links</button>
+      <button id="recon-forms">Forms &amp; Inputs</button>
+      <button id="recon-hidden">Hidden Fields</button>
+      <button id="recon-domxss">DOM XSS</button>
+      <button id="recon-secrets">Secrets</button>
+      <button id="recon-storage-scan">Storage Scan</button>
+      <button id="recon-clear" class="danger">Clear</button>
+    </div>
+    <div id="recon-output" class="recon-output"></div>
+  </div>
+
+  <!-- ═══ PROFILES ════════════════════════════════════════════════════════ -->
+  <div id="tab-profiles" class="tab-pane hidden">
+    <div class="section-nav">
+      <a class="section-jump" data-target="profiles-proxy">⌄ Proxy</a>
+      <a class="section-jump" data-target="profiles-ua">⌄ User-Agent</a>
+      <a class="section-jump" data-target="profiles-roles">⌄ Role Switcher</a>
+    </div>
+
+    <div class="stack-section" id="profiles-proxy">
+      <h3>Proxy</h3>
+      <div id="proxy-status-bar" class="proxy-status off">
+        <span id="proxy-status-icon">○</span>
+        <span id="proxy-status-text">Direct (no proxy)</span>
+      </div>
+      <div class="proxy-quick-btns">
+        <button id="proxy-direct" class="proxy-quick active" data-mode="direct">Direct</button>
+        <button id="proxy-system" class="proxy-quick" data-mode="system">System</button>
+        <button id="proxy-burp" class="proxy-quick" data-mode="burp">Burp Suite</button>
+      </div>
+      <div class="form-row" style="margin-top:12px">
+        <input id="proxy-profile-name" placeholder="Profile name" autocomplete="off">
+        <select id="proxy-type">
+          <option value="http">HTTP</option>
+          <option value="https">HTTPS</option>
+          <option value="socks4">SOCKS4</option>
+          <option value="socks5">SOCKS5</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <input id="proxy-host" placeholder="Host (e.g. 127.0.0.1)" autocomplete="off">
+        <input id="proxy-port" placeholder="Port (e.g. 8080)" type="number" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <input id="proxy-include" placeholder="Include patterns (comma-sep, e.g. *.example.com)" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <input id="proxy-exclude" placeholder="Exclude patterns (comma-sep, e.g. *.google.com)" autocomplete="off">
+      </div>
+      <div class="row-actions">
+        <button id="proxy-save-btn" class="primary">Save Profile</button>
+      </div>
+      <div id="proxy-profiles-list" class="proxy-profiles-list"></div>
+    </div>
+
+    <div class="stack-section" id="profiles-ua">
+      <h3>User-Agent Switcher</h3>
+      <div class="form-row">
+        <select id="ua-preset">
+          <option value="">— Select preset —</option>
+          <option value="chrome-win">Chrome 147 — Windows 10</option>
+          <option value="chrome-mac">Chrome 147 — macOS</option>
+          <option value="firefox-win">Firefox 150 — Windows 10</option>
+          <option value="safari-mac">Safari 26.4 — macOS Sonoma</option>
+          <option value="edge-win">Edge 147 — Windows 11</option>
+          <option value="curl">curl/8.13.0</option>
+          <option value="iphone-safari">iPhone — Safari (iOS 26.4)</option>
+          <option value="iphone-chrome">iPhone — Chrome (iOS 26.4)</option>
+          <option value="android-chrome">Pixel 9 — Chrome (Android 16)</option>
+          <option value="samsung-browser">Galaxy S24 Ultra — Samsung Browser 28</option>
+        </select>
+        <button id="ua-apply-btn" class="primary">Apply</button>
+        <button id="ua-reset-btn" class="danger">Reset</button>
+      </div>
+      <input id="ua-custom" placeholder="Or paste a custom User-Agent string…" autocomplete="off">
+      <div class="form-row">
+        <input id="ua-profile-name" placeholder="User-Agent profile name" autocomplete="off">
+        <button id="ua-save-btn" class="primary" type="button">Save UA Profile</button>
+      </div>
+      <div id="ua-profiles-list" class="ua-profiles-list"></div>
+      <div id="ua-status" class="ua-status"></div>
+    </div>
+
+    <div class="stack-section" id="profiles-roles">
+      <h3>Role Switcher</h3>
+      <div class="form-row">
+        <input id="role-name" placeholder="Role label (e.g. admin)" autocomplete="off">
+        <select id="role-type">
+          <option value="bearer">Bearer token</option>
+          <option value="cookie">Cookie value</option>
+          <option value="basic">Basic auth</option>
+          <option value="custom">Custom header</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <input id="role-token" placeholder="Token / value" autocomplete="off">
+        <input id="role-header-name" placeholder="Header name" class="hidden" autocomplete="off">
+        <input id="role-cookie-name" placeholder="Cookie name" class="hidden" autocomplete="off">
+      </div>
+      <div class="form-row">
+        <input id="role-domain" placeholder="Domain scope (blank = current site)" autocomplete="off">
+        <label class="checkbox-label"><input id="role-subdomain" type="checkbox" checked> Include subdomains</label>
+      </div>
+      <div class="row-actions">
+        <button id="role-save-btn" class="primary" type="button">Save Role</button>
+        <button id="role-edit-cancel" class="hidden" type="button">Cancel edit</button>
+        <button id="role-clear-btn" class="danger" type="button">Clear All</button>
+      </div>
+      <div id="roles-list" class="roles-list"></div>
+    </div>
+  </div>
+
+  <!-- ═══ TOOLS ══════════════════════════════════════════════════════════ -->
+  <div id="tab-tools" class="tab-pane hidden">
+    <div class="section-nav">
+      <a class="section-jump" data-target="tools-encode">⌄ Encode / Decode</a>
+      <a class="section-jump" data-target="tools-hash">⌄ Hash</a>
+    </div>
+
+    <div class="stack-section" id="tools-encode">
+      <h3>Encode / Decode</h3>
+      <div class="form-row">
+        <select id="encode-type">
+          <option value="base64">Base64</option>
+          <option value="base64url">Base64URL</option>
+          <option value="url">URL encode</option>
+          <option value="url-full">URL encode (full)</option>
+          <option value="html">HTML entities</option>
+          <option value="hex">Hex</option>
+          <option value="unicode">Unicode escape</option>
+        </select>
+        <button id="encode-btn" title="Encode">Encode ˅</button>
+        <button id="decode-btn" title="Decode">Decode ˄</button>
+        <button id="encode-swap-btn" title="Swap">↕ Swap</button>
+      </div>
+      <textarea id="encode-input" rows="10" placeholder="Input…" spellcheck="false"></textarea>
+      <textarea id="encode-output" rows="10" placeholder="Output…" spellcheck="false" readonly></textarea>
+      <div class="row-actions">
+        <button id="encode-copy">Copy Output</button>
+        <button id="encode-clear">Clear</button>
+      </div>
+    </div>
+
+    <div class="stack-section" id="tools-hash">
+      <h3>Hash</h3>
+      <div class="form-row">
+        <select id="hash-type">
+          <option value="identify">Identify hash</option>
+          <option value="md5">MD5</option>
+          <option value="sha1">SHA-1</option>
+          <option value="sha256">SHA-256</option>
+          <option value="sha384">SHA-384</option>
+          <option value="sha512">SHA-512</option>
+        </select>
+        <button id="hash-btn" class="primary">Run</button>
+      </div>
+      <input id="hash-input" placeholder="Input string or hash to identify…" spellcheck="false">
+      <div id="hash-output" class="hash-output"></div>
+    </div>
+  </div>
+
+  <!-- ═══ PAYLOADS ════════════════════════════════════════════════════════ -->
+  <div id="tab-payloads" class="tab-pane hidden">
+    <div class="toolbar">
+      <input id="payload-search" placeholder="Search payloads…" autocomplete="off" style="flex:1">
+      <button id="payload-search-clear">Clear</button>
+    </div>
+    <div id="payload-output"></div>
+  </div>
+
+</div>
+
+<div id="storage-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="storage-modal-title">Add Entry</h3>
+    <label>Key<input id="sk-key" autocomplete="off"></label>
+    <label>Value<textarea id="sk-value" rows="5"></textarea></label>
+    <div class="modal-actions">
+      <button id="sk-save" class="primary">Save</button>
+      <button id="sk-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="cookie-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3 id="cookie-modal-title">Edit Cookie</h3>
+    <div class="form-grid">
+      <label>Name<input id="ck-name" autocomplete="off"></label>
+      <label>Value<input id="ck-value" autocomplete="off"></label>
+      <label>Domain<input id="ck-domain" autocomplete="off"></label>
+      <label>Path<input id="ck-path" value="/" autocomplete="off"></label>
+      <label>Expires<input id="ck-expires" type="datetime-local"></label>
+      <label>SameSite
+        <select id="ck-samesite">
+          <option value="no_restriction">None</option>
+          <option value="lax">Lax</option>
+          <option value="strict">Strict</option>
+          <option value="unspecified">Unspecified</option>
+        </select>
+      </label>
+      <label class="checkbox-label"><input id="ck-httponly" type="checkbox"> HttpOnly</label>
+      <label class="checkbox-label"><input id="ck-secure" type="checkbox"> Secure</label>
+    </div>
+    <div class="modal-actions">
+      <button id="ck-save" class="primary">Save</button>
+      <button id="ck-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div id="ctx-menu" class="ctx-menu hidden">
+  <div id="ctx-send-encode" class="ctx-item">› Send to Encode / Decode</div>
+  <div id="ctx-send-jwt" class="ctx-item">› Send to JWT tab</div>
+  <div id="ctx-copy-urlencoded" class="ctx-item">› Copy as URL encoded</div>
+</div>
+<div id="toast-container"></div>
+<script src="panel.js"></script>
+</body>
+</html>

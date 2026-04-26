@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arrow SVG Preview</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --card: #161b22;
+      --border: #30363d;
+      --text: #c9d1d9;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: 20px;
+    }
+    p {
+      margin: 0 0 20px;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .label {
+      font-weight: 600;
+      margin-bottom: 10px;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-width: 34px;
+      min-height: 30px;
+      padding: 4px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #21262d;
+      color: var(--text);
+    }
+    .btn svg { display: block; }
+    .note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .accent { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <h1>Arrow SVG Preview</h1>
+  <p>Compare these in your environment. Icons inherit <span class="accent">currentColor</span>.</p>
+
+  <div class="grid">
+    <div class="card">
+      <div class="label">Chevron</div>
+      <div class="row">
+        <button class="btn" title="Down">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+        <button class="btn" title="Up">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+            <path d="M6 15l6-6 6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="note">Minimal and modern. Great default.</div>
+    </div>
+
+    <div class="card">
+      <div class="label">Solid Triangle</div>
+      <div class="row">
+        <button class="btn" title="Down">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M7 10l5 6 5-6z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button class="btn" title="Up">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M7 14l5-6 5 6z" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+      <div class="note">Stronger visual weight.</div>
+    </div>
+
+    <div class="card">
+      <div class="label">Caret</div>
+      <div class="row">
+        <button class="btn" title="Down">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M8 10h8l-4 5z" fill="currentColor"/>
+          </svg>
+        </button>
+        <button class="btn" title="Up">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M8 14h8l-4-5z" fill="currentColor"/>
+          </svg>
+        </button>
+      </div>
+      <div class="note">Compact and familiar.</div>
+    </div>
+
+    <div class="card">
+      <div class="label">Buttons with text</div>
+      <div class="row">
+        <button class="btn" title="Expand">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M7 10l5 6 5-6z" fill="currentColor"/>
+          </svg>
+          Expand
+        </button>
+        <button class="btn" title="Collapse">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+            <path d="M7 14l5-6 5 6z" fill="currentColor"/>
+          </svg>
+          Collapse
+        </button>
+      </div>
+      <div class="note">Shows real-world toolbar use.</div>
+    </div>
+  </div>
+</body>
+</html>
