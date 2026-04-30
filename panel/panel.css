@@ -24,6 +24,7 @@ html, body {
   margin: 0;
   padding: 0;
   width: 720px;
+  height: 100%;
   min-height: 580px;
   background: var(--bg);
   color: var(--text);
@@ -31,23 +32,152 @@ html, body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   LAYOUT — Natural document flow. The popup viewport is the ONLY scroll.
-   Tab-bar is sticky. No inner overflow anywhere.
+   LAYOUT — Sidebar rail + scrollable content pane.
    ═══════════════════════════════════════════════════════════════════════ */
 
 #app {
+  display: flex;
+  flex-direction: row;
   width: 720px;
+  height: 100vh;
+  min-height: 580px;
   background: var(--bg);
 }
 
-#tab-bar {
-  display: flex;
+/* ─── Sidebar ─────────────────────────────────────────────────────────── */
+#sidebar {
+  width: 50px;
+  flex-shrink: 0;
   background: var(--bg2);
-  border-bottom: 2px solid var(--border);
-  padding: 0 var(--space-sm);
-  position: sticky;
-  top: 0;
-  z-index: 10;
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  transition: width 0.15s ease;
+}
+
+@media (min-width: 500px) {
+  #sidebar { width: 160px; }
+  .nav-label { display: block !important; }
+  .brand-text { display: block !important; }
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  height: 48px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.brand-mark {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+}
+
+.brand-text {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: var(--dim);
+  font-family: var(--mono);
+  display: none;
+  white-space: nowrap;
+}
+
+.nav-btn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 14px;
+  width: 100%;
+  border: none;
+  border-left: 3px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  text-align: left;
+  position: relative;
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background .15s, color .15s, border-color .15s;
+}
+
+.nav-btn:hover { background: rgba(255,255,255,.04); color: var(--text); transform: none; }
+.nav-btn:active { transform: none; }
+.nav-btn.active { background: rgba(88,166,255,.1); border-left-color: var(--accent); color: var(--text); }
+
+.nav-icon {
+  font-size: 16px;
+  width: 22px;
+  flex-shrink: 0;
+  text-align: center;
+  line-height: 1;
+}
+
+.nav-label {
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  display: none;
+}
+
+.nav-active-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  position: absolute;
+  right: 10px; top: 50%;
+  transform: translateY(-50%);
+  display: none;
+}
+.nav-active-dot.visible { display: block; }
+
+.sidebar-spacer { flex: 1; }
+
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding: 10px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--dim);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 700;
+  transition: color .15s, background .15s;
+  flex-shrink: 0;
+}
+.sidebar-toggle:hover { background: rgba(255,255,255,.04); color: var(--text); transform: none; }
+.sidebar-toggle:active { transform: none; }
+
+#sidebar.collapsed { width: 50px; }
+#sidebar.collapsed .nav-label,
+#sidebar.collapsed .brand-text { display: none !important; }
+#sidebar.collapsed .sidebar-toggle { font-size: 14px; }
+#sidebar.collapsed #sidebar-toggle { content: '›'; }
+
+/* Override media-query labels when explicitly collapsed */
+#sidebar.collapsed .nav-label { display: none !important; }
+
+/* ─── Content pane ────────────────────────────────────────────────────── */
+#content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+  min-width: 0;
 }
 
 .tab-pane {
@@ -59,22 +189,7 @@ html, body {
 
 .hidden { display: none !important; }
 
-/* ── Tab buttons ────────────────────────────────────────────────────── */
-.tab-btn {
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--dim);
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: .5px;
-  padding: 10px 16px;
-  text-transform: uppercase;
-  transition: color .2s, border-color .2s;
-}
-.tab-btn:hover { color: var(--text); }
-.tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+/* .tab-btn removed — replaced by .nav-btn in sidebar */
 
 /* ── Toolbar ────────────────────────────────────────────────────────── */
 .toolbar {
@@ -895,7 +1010,7 @@ pre.code-block {
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
-  position: sticky; top: 44px; z-index: 9;
+  position: sticky; top: 0; z-index: 9;
 }
 #active-bar.empty { padding: 0; border-bottom: none; }
 .abar-chip {

@@ -8,15 +8,49 @@
 <body>
 <div id="app">
 
-  <nav id="tab-bar">
-    <button class="tab-btn active" data-tab="cookies">Cookies</button>
-    <button class="tab-btn" data-tab="storage">Storage</button>
-    <button class="tab-btn" data-tab="jwt">JWT</button>
-    <button class="tab-btn" data-tab="recon">Recon</button>
-    <button class="tab-btn" data-tab="profiles">Profiles</button>
-    <button class="tab-btn" data-tab="tools">Tools</button>
-    <button class="tab-btn" data-tab="payloads">Payloads</button>
+  <!-- ═══ SIDEBAR ════════════════════════════════════════════════════════════ -->
+  <nav id="sidebar">
+    <div class="sidebar-brand">
+      <img class="brand-mark" src="../icons/icon-32.png" alt="Spectre" width="22" height="22">
+      <span class="brand-text">SPECTRE</span>
+    </div>
+
+    <button class="nav-btn active" data-tab="cookies">
+      <span class="nav-icon">🍪</span>
+      <span class="nav-label">Cookies</span>
+    </button>
+    <button class="nav-btn" data-tab="storage">
+      <span class="nav-icon">🗄</span>
+      <span class="nav-label">Storage</span>
+    </button>
+    <button class="nav-btn" data-tab="jwt">
+      <span class="nav-icon">🔐</span>
+      <span class="nav-label">JWT</span>
+    </button>
+    <button class="nav-btn" data-tab="recon">
+      <span class="nav-icon">🔍</span>
+      <span class="nav-label">Recon</span>
+    </button>
+    <button class="nav-btn" data-tab="profiles">
+      <span class="nav-icon">👤</span>
+      <span class="nav-label">Profiles</span>
+      <span class="nav-active-dot" id="profiles-active-dot"></span>
+    </button>
+    <button class="nav-btn" data-tab="tools">
+      <span class="nav-icon">⚙</span>
+      <span class="nav-label">Tools</span>
+    </button>
+    <button class="nav-btn" data-tab="payloads">
+      <span class="nav-icon">⚡</span>
+      <span class="nav-label">Payloads</span>
+    </button>
+
+    <div class="sidebar-spacer"></div>
+    <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle sidebar">‹</button>
   </nav>
+
+  <!-- ═══ CONTENT ════════════════════════════════════════════════════════════ -->
+  <main id="content">
 
   <div id="active-bar" class="active-bar empty"></div>
 
@@ -324,6 +358,7 @@
     <div id="payload-output"></div>
   </div>
 
+  </main>
 </div>
 
 <div id="storage-modal" class="modal hidden">

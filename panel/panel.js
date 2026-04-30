@@ -97,8 +97,8 @@ const state = {
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
 
 function initTabs() {
-  $$('.tab-btn').forEach(btn => btn.addEventListener('click', () => {
-    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+  $$('.nav-btn').forEach(btn => btn.addEventListener('click', () => {
+    $$('.nav-btn').forEach(b => b.classList.remove('active'));
     $$('.tab-pane').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
     btn.classList.add('active');
     const pane = $('tab-' + btn.dataset.tab);
@@ -204,9 +204,9 @@ const Cookies = {
   sendToJWT(idx) {
     const c = state.cookiesCache[idx];
     state.jwtSourceCookie = c;
-    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.nav-btn').forEach(b => b.classList.remove('active'));
     $$('.tab-pane').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
-    document.querySelector('.tab-btn[data-tab="jwt"]').classList.add('active');
+    document.querySelector('.nav-btn[data-tab="jwt"]').classList.add('active');
     const pane = $('tab-jwt');
     pane.classList.remove('hidden');
     pane.classList.add('active');
@@ -1860,6 +1860,10 @@ const ActiveBar = {
       bar.innerHTML = '';
       bar.classList.add('empty');
     }
+
+    // Dot indicator on sidebar Profiles button
+    const dot = $('profiles-active-dot');
+    if (dot) dot.classList.toggle('visible', chips.length > 0);
   },
 };
 
@@ -2341,9 +2345,9 @@ function hideCtxMenu() {
 }
 
 function activateTab(tabName) {
-  $$('.tab-btn').forEach(b => b.classList.remove('active'));
+  $$('.nav-btn').forEach(b => b.classList.remove('active'));
   $$('.tab-pane').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
-  document.querySelector(`.tab-btn[data-tab="${tabName}"]`)?.classList.add('active');
+  document.querySelector(`.nav-btn[data-tab="${tabName}"]`)?.classList.add('active');
   const pane = $(`tab-${tabName}`);
   if (pane) {
     pane.classList.remove('hidden');
@@ -2709,10 +2713,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Auto-load when switching to cookies tab
-  document.querySelector('.tab-btn[data-tab="cookies"]').addEventListener('click', () => Cookies.load());
+  document.querySelector('.nav-btn[data-tab="cookies"]').addEventListener('click', () => Cookies.load());
 
   // Re-populate JWT input from pinned cookie source when switching to JWT tab
-  document.querySelector('.tab-btn[data-tab="jwt"]').addEventListener('click', () => {
+  document.querySelector('.nav-btn[data-tab="jwt"]').addEventListener('click', () => {
     if (state.jwtSourceCookie !== null && !$('jwt-input').value.trim()) {
       const c = state.cookiesCache[state.jwtSourceCookie];
       if (c) { $('jwt-input').value = c.value; JWT.decode(); }
@@ -2720,7 +2724,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // Auto-load when switching to storage tab
-  document.querySelector('.tab-btn[data-tab="storage"]').addEventListener('click', async () => {
+  document.querySelector('.nav-btn[data-tab="storage"]').addEventListener('click', async () => {
     Storage.switchView(state.storageView);
     if (state.storageView === 'local') await Storage.loadLocal();
     else await Storage.loadSession();
@@ -3003,7 +3007,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }));
 
   // ── Payloads ──
-  document.querySelector('.tab-btn[data-tab="payloads"]').addEventListener('click', () => Payloads.render());
+  document.querySelector('.nav-btn[data-tab="payloads"]').addEventListener('click', () => Payloads.render());
   $('payload-search').addEventListener('input', e => { Payloads.filter = e.target.value; Payloads.render(); });
   $('payload-search-clear').addEventListener('click', () => { $('payload-search').value = ''; Payloads.filter = ''; Payloads.render(); });
   $('payload-output').addEventListener('contextmenu', e => {
@@ -3037,6 +3041,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.storageSnapshot = { local: { ...state.localCache }, session: { ...state.sessionCache } };
   });
 
+  // ── Sidebar collapse toggle ──
+  const sidebar = $('sidebar');
+  const toggleBtn = $('sidebar-toggle');
+  const { sidebarCollapsed = false } = await chrome.storage.local.get('sidebarCollapsed');
+  if (sidebarCollapsed) { sidebar.classList.add('collapsed'); toggleBtn.textContent = '›'; }
+  toggleBtn.addEventListener('click', async () => {
+    const collapsed = sidebar.classList.toggle('collapsed');
+    toggleBtn.textContent = collapsed ? '›' : '‹';
+    await chrome.storage.local.set({ sidebarCollapsed: collapsed });
+  });
+
   // ── Storage snapshot buttons (#12) ──
   $('storage-snapshot-btn').addEventListener('click', () => Storage.takeSnapshot());
   $('storage-clear-diff').addEventListener('click', () => Storage.clearSnapshot());
@@ -3047,9 +3062,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!chip) return;
     const sectionId = chip.dataset.section;
     // Mirror the normal tab-click logic exactly
-    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.nav-btn').forEach(b => b.classList.remove('active'));
     $$('.tab-pane').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
-    const tabBtn = document.querySelector('.tab-btn[data-tab="profiles"]');
+    const tabBtn = document.querySelector('.nav-btn[data-tab="profiles"]');
     const tabPanel = $('tab-profiles');
     if (tabBtn) tabBtn.classList.add('active');
     if (tabPanel) { tabPanel.classList.remove('hidden'); tabPanel.classList.add('active'); }
@@ -3058,9 +3073,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       const anchor = $(sectionId);
       if (anchor) {
         requestAnimationFrame(() => {
-          const stickyOffset = 44 + ($('active-bar').offsetHeight || 0) + 8;
-          const top = anchor.getBoundingClientRect().top + document.documentElement.scrollTop - stickyOffset;
-          window.scrollTo({ top, behavior: 'smooth' });
+          const content = $('content');
+          const stickyOffset = ($('active-bar').offsetHeight || 0) + 8;
+          const top = anchor.getBoundingClientRect().top + content.scrollTop - stickyOffset;
+          content.scrollTo({ top, behavior: 'smooth' });
         });
       }
     }
@@ -3088,4 +3104,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (tab) { state.tabId = tab.id; state.tabUrl = tab.url ?? ''; Cookies.load(); Storage.switchView(state.storageView); }
     });
   }
+
+  // ── Auto-refresh cookies on Set-Cookie (covers XHR/fetch login flows) ──
+  let _cookieTimer = null;
+  chrome.cookies.onChanged.addListener(({ cookie }) => {
+    if (!state.tabUrl) return;
+    try {
+      const hostname = new URL(state.tabUrl).hostname;
+      const cookieDomain = cookie.domain.replace(/^\./, '');
+      if (!hostname.endsWith(cookieDomain) && !cookieDomain.endsWith(hostname)) return;
+    } catch { return; }
+    clearTimeout(_cookieTimer);
+    _cookieTimer = setTimeout(() => Cookies.load(), 350);
+  });
 });
