@@ -110,6 +110,14 @@ button.sm {
   padding: 4px 10px;
   border-radius: 6px;
 }
+button.secondary { border-color: var(--dim); color: var(--dim); }
+button.secondary:hover { border-color: var(--text); color: var(--text); }
+
+.section-divider {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: var(--space-xs) 0;
+}
 
 /* ── Inputs / selects / textareas ───────────────────────────────────── */
 input, select, textarea {
@@ -879,3 +887,32 @@ pre.code-block {
   text-decoration: none;
 }
 .sum-link:hover { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* Active State Bar (#11) */
+#active-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px var(--space-sm);
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  position: sticky; top: 44px; z-index: 9;
+}
+#active-bar.empty { padding: 0; border-bottom: none; }
+.abar-chip {
+  display: inline-flex; align-items: center;
+  font-size: 11px; font-weight: 600;
+  padding: 3px 10px; border-radius: 12px;
+  cursor: pointer; letter-spacing: .3px;
+}
+.abar-chip:hover { filter: brightness(1.3); }
+.abar-role    { background: rgba(63,185,80,.15);   color: var(--green);  border: 1px solid rgba(63,185,80,.4); }
+.abar-proxy   { background: rgba(88,166,255,.12);  color: var(--accent); border: 1px solid rgba(88,166,255,.35); }
+.abar-ua      { background: rgba(210,153,34,.12);  color: var(--yellow); border: 1px solid rgba(210,153,34,.35); }
+.abar-headers { background: rgba(219,109,40,.12);  color: var(--orange); border: 1px solid rgba(219,109,40,.35); }
+
+/* Storage Diff Badges (#12) */
+.diff-badge { font-size: 9px; font-weight: 800; padding: 1px 6px; border-radius: 3px; letter-spacing: .5px; flex-shrink: 0; }
+.diff-new     { background: rgba(63,185,80,.2);  color: var(--green); }
+.diff-changed { background: rgba(210,153,34,.2); color: var(--yellow); }
+.diff-removed { background: rgba(248,81,73,.2);  color: var(--red); }
+.st-removed   { opacity: .55; }

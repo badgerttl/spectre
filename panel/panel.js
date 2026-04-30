@@ -91,6 +91,7 @@ const state = {
   storageView:     'local',
   roleEditId:      null,
   ctxSource:       null,
+  storageSnapshot: { local: null, session: null },
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -343,15 +344,33 @@ const Storage = {
     else this.loadSession();
   },
 
+  takeSnapshot() {
+    state.storageSnapshot = {
+      local:   { ...state.localCache },
+      session: { ...state.sessionCache },
+    };
+    this.renderTable(state.storageView, state.storageView === 'local' ? state.localCache : state.sessionCache);
+    $('storage-clear-diff').classList.remove('hidden');
+    toast('Snapshot taken', 'success');
+  },
+
+  clearSnapshot() {
+    state.storageSnapshot = { local: null, session: null };
+    this.renderTable(state.storageView, state.storageView === 'local' ? state.localCache : state.sessionCache);
+    $('storage-clear-diff').classList.add('hidden');
+  },
+
   renderTable(type, data) {
     const bodyId   = `${type}-body`;
     const countEl  = $(`${type}-count`);
     const filter   = ($('storage-filter')?.value || '').toLowerCase();
+    const snap     = state.storageSnapshot[type];
     const entries  = Object.entries(data).filter(([k, v]) =>
       !filter || k.toLowerCase().includes(filter) || String(v).toLowerCase().includes(filter)
     );
     if (countEl) countEl.textContent = entries.length;
-    const rows = entries.map(([k, v]) => {
+
+    const makeRow = (k, v, badgeHtml, extraClass = '') => {
       const vStr = String(v);
       const pretty = prettyJSON(vStr);
       const display = pretty || vStr;
@@ -364,8 +383,9 @@ const Storage = {
             <button class="collapse-btn" data-action="toggle-collapse" aria-label="Toggle value"></button>
           </div>`
         : `<span class="val-text">${esc(display)}</span>`;
-      return `<div class="st-entry" data-type="${esc(type)}" data-key="${esc(k)}">
+      return `<div class="st-entry${extraClass ? ' ' + extraClass : ''}" data-type="${esc(type)}" data-key="${esc(k)}">
         <div class="st-entry-btns">
+          ${badgeHtml}
           <button class="sm" data-action="st-edit" data-st="${esc(type)}" data-skey="${esc(k)}" title="Edit" aria-label="Edit">✎</button>
           <button class="sm danger" data-action="st-del" data-st="${esc(type)}" data-skey="${esc(k)}" title="Delete" aria-label="Delete">✕</button>
           <button class="sm" data-action="st-copy" data-val="${esc(vStr)}" title="Copy" aria-label="Copy">⧉</button>
@@ -375,8 +395,28 @@ const Storage = {
           <div class="st-entry-val"><span class="st-label">Value:</span> ${valHtml}</div>
         </div>
       </div>`;
-    }).join('');
-    $(bodyId).innerHTML = rows || `<div class="empty" style="padding:10px">Empty</div>`;
+    };
+
+    const rows = entries.map(([k, v]) => {
+      let badge = '';
+      if (snap) {
+        if (!(k in snap)) badge = '<span class="diff-badge diff-new">NEW</span>';
+        else if (String(snap[k]) !== String(v)) badge = '<span class="diff-badge diff-changed">CHG</span>';
+      }
+      return makeRow(k, v, badge);
+    });
+
+    // Removed keys (in snapshot but not current data)
+    if (snap) {
+      for (const k of Object.keys(snap)) {
+        if (k in data) continue;
+        if (filter && !k.toLowerCase().includes(filter)) continue;
+        const badge = '<span class="diff-badge diff-removed">DEL</span>';
+        rows.push(makeRow(k, snap[k], badge, 'st-removed'));
+      }
+    }
+
+    $(bodyId).innerHTML = rows.join('') || `<div class="empty" style="padding:10px">Empty</div>`;
   },
 
   inlineEdit(type, field, key, el) {
@@ -1593,6 +1633,7 @@ const Auth = {
     await chrome.storage.local.set({ activeRoleId: id });
     bg('SYNC_ROLE_MENUS');
     this.renderRoles();
+    ActiveBar.update();
   },
 
   async ejectRole() {
@@ -1602,6 +1643,7 @@ const Auth = {
     bg('SYNC_ROLE_MENUS');
     toast('Auth ejected', 'success');
     this.renderRoles();
+    ActiveBar.update();
   },
 
   async deleteRole(id) {
@@ -1692,6 +1734,7 @@ const HeaderProfiles = {
     bg('SYNC_ROLE_MENUS');
     toast(`${profile.name} applied → ${domain}`, 'success');
     this.renderProfiles();
+    ActiveBar.update();
   },
 
   async ejectProfile() {
@@ -1701,6 +1744,7 @@ const HeaderProfiles = {
     bg('SYNC_ROLE_MENUS');
     toast('Header injection ejected', 'success');
     this.renderProfiles();
+    ActiveBar.update();
   },
 
   async deleteProfile(id) {
@@ -1744,6 +1788,81 @@ const HeaderProfiles = {
   },
 };
 
+// ─── Active State Bar (#11) ───────────────────────────────────────────────────
+
+const UA_SHORT_NAMES = {
+  'chrome-win':      'Chrome/Win',
+  'chrome-mac':      'Chrome/Mac',
+  'firefox-win':     'Firefox/Win',
+  'safari-mac':      'Safari/Mac',
+  'edge-win':        'Edge/Win',
+  'curl':            'curl',
+  'iphone-safari':   'Safari/iPhone',
+  'iphone-chrome':   'Chrome/iPhone',
+  'android-chrome':  'Chrome/Android',
+  'samsung-browser': 'Samsung',
+};
+
+const ActiveBar = {
+  async update() {
+    const bar = $('active-bar');
+    if (!bar) return;
+
+    const {
+      activeRoleId    = null,
+      roles           = [],
+      proxyMode       = 'direct',
+      proxyProfileId  = null,
+      proxyProfiles   = [],
+      activeUA        = null,
+      activeHeaderProfileId = null,
+      headerProfiles  = [],
+    } = await chrome.storage.local.get([
+      'activeRoleId', 'roles', 'proxyMode', 'proxyProfileId', 'proxyProfiles',
+      'activeUA', 'activeHeaderProfileId', 'headerProfiles',
+    ]);
+
+    const chips = [];
+
+    // Role chip
+    if (activeRoleId) {
+      const role = roles.find(r => r.id === activeRoleId);
+      if (role) chips.push(`<span class="abar-chip abar-role" data-section="profiles-roles">👤 ${esc(role.name)}</span>`);
+    }
+
+    // Proxy chip
+    if (proxyMode && proxyMode !== 'direct') {
+      let label = proxyMode;
+      if (proxyMode === 'profile' && proxyProfileId) {
+        const pp = proxyProfiles.find(p => p.id === proxyProfileId);
+        if (pp) label = pp.name;
+      }
+      chips.push(`<span class="abar-chip abar-proxy" data-section="profiles-proxy">⬡ ${esc(label)}</span>`);
+    }
+
+    // UA chip
+    if (activeUA) {
+      const matchKey = Object.entries(UA_PRESETS).find(([, v]) => v === activeUA)?.[0];
+      const short = matchKey ? (UA_SHORT_NAMES[matchKey] || matchKey) : activeUA.substring(0, 22) + '…';
+      chips.push(`<span class="abar-chip abar-ua" data-section="profiles-ua">🕵 ${esc(short)}</span>`);
+    }
+
+    // Header profile chip
+    if (activeHeaderProfileId) {
+      const hp = headerProfiles.find(p => p.id === activeHeaderProfileId);
+      if (hp) chips.push(`<span class="abar-chip abar-headers" data-section="profiles-headers">⊕ ${esc(hp.name)}</span>`);
+    }
+
+    if (chips.length) {
+      bar.innerHTML = chips.join('');
+      bar.classList.remove('empty');
+    } else {
+      bar.innerHTML = '';
+      bar.classList.add('empty');
+    }
+  },
+};
+
 // ─── User-Agent Switcher ──────────────────────────────────────────────────────
 
 const UA_RULE_ID = 2;
@@ -1782,6 +1901,7 @@ const UserAgent = {
     toast('User-Agent applied', 'success');
     this.showStatus(ua);
     this.renderProfiles();
+    ActiveBar.update();
   },
 
   async reset() {
@@ -1795,6 +1915,7 @@ const UserAgent = {
     $('ua-status').classList.remove('active');
     toast('User-Agent reset to default', 'success');
     this.renderProfiles();
+    ActiveBar.update();
   },
 
   showStatus(ua) {
@@ -1848,6 +1969,7 @@ const UserAgent = {
     bg('SYNC_ROLE_MENUS');
     toast(`UA profile applied: ${profile.name}`, 'success');
     this.renderProfiles();
+    ActiveBar.update();
   },
 
   async loadProfiles() {
@@ -1936,6 +2058,7 @@ const Proxy = {
     this.updateUI();
     bg('SYNC_ROLE_MENUS');
     toast(`Proxy: ${mode}`, 'success');
+    ActiveBar.update();
   },
 
   async applyProfile(id) {
@@ -1961,6 +2084,7 @@ const Proxy = {
     this.updateUI();
     bg('SYNC_ROLE_MENUS');
     toast(`Proxy: ${profile.name}`, 'success');
+    ActiveBar.update();
   },
 
   async saveProfile() {
@@ -2907,6 +3031,40 @@ document.addEventListener('DOMContentLoaded', async () => {
   Storage.switchView('local');
   Cookies.load();
   Auth.loadRoles();
+  ActiveBar.update();
+  // Auto-snapshot on load (silent baseline for diff)
+  Storage.load().then(() => {
+    state.storageSnapshot = { local: { ...state.localCache }, session: { ...state.sessionCache } };
+  });
+
+  // ── Storage snapshot buttons (#12) ──
+  $('storage-snapshot-btn').addEventListener('click', () => Storage.takeSnapshot());
+  $('storage-clear-diff').addEventListener('click', () => Storage.clearSnapshot());
+
+  // ── Active bar chip click → go to Profiles tab + section (#11) ──
+  $('active-bar').addEventListener('click', e => {
+    const chip = e.target.closest('.abar-chip');
+    if (!chip) return;
+    const sectionId = chip.dataset.section;
+    // Mirror the normal tab-click logic exactly
+    $$('.tab-btn').forEach(b => b.classList.remove('active'));
+    $$('.tab-pane').forEach(p => { p.classList.remove('active'); p.classList.add('hidden'); });
+    const tabBtn = document.querySelector('.tab-btn[data-tab="profiles"]');
+    const tabPanel = $('tab-profiles');
+    if (tabBtn) tabBtn.classList.add('active');
+    if (tabPanel) { tabPanel.classList.remove('hidden'); tabPanel.classList.add('active'); }
+    // Scroll to section with offset for sticky bars (rAF so layout updates first)
+    if (sectionId) {
+      const anchor = $(sectionId);
+      if (anchor) {
+        requestAnimationFrame(() => {
+          const stickyOffset = 44 + ($('active-bar').offsetHeight || 0) + 8;
+          const top = anchor.getBoundingClientRect().top + document.documentElement.scrollTop - stickyOffset;
+          window.scrollTo({ top, behavior: 'smooth' });
+        });
+      }
+    }
+  });
 
   // ── Navigation refresh ──
   async function refreshForNav(url) {

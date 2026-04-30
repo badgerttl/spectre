@@ -18,6 +18,8 @@
     <button class="tab-btn" data-tab="payloads">Payloads</button>
   </nav>
 
+  <div id="active-bar" class="active-bar empty"></div>
+
   <!-- ═══ COOKIES ═══════════════════════════════════════════════════════ -->
   <div id="tab-cookies" class="tab-pane active">
     <div class="toolbar">
@@ -40,6 +42,8 @@
       <button id="storage-refresh">⟳ Refresh</button>
       <button id="storage-add">+ Add</button>
       <button id="storage-clear-btn" class="danger">Clear</button>
+      <button id="storage-snapshot-btn" title="Snapshot current storage to track changes">📸 Snapshot</button>
+      <button id="storage-clear-diff" class="hidden secondary" type="button" title="Clear diff snapshot">✕ Diff</button>
       <input id="storage-filter" placeholder="Filter key / value…" autocomplete="off">
     </div>
     <div class="toolbar storage-switch-bar">
@@ -151,11 +155,12 @@
         <span id="proxy-status-text">Direct (no proxy)</span>
       </div>
       <div class="proxy-quick-btns">
-        <button id="proxy-direct" class="proxy-quick active" data-mode="direct">Direct</button>
-        <button id="proxy-system" class="proxy-quick" data-mode="system">System</button>
-        <button id="proxy-burp" class="proxy-quick" data-mode="burp">Burp Suite</button>
+        <button id="proxy-direct" class="proxy-quick active" data-mode="direct" type="button">Direct</button>
+        <button id="proxy-system" class="proxy-quick" data-mode="system" type="button">System</button>
+        <button id="proxy-burp" class="proxy-quick" data-mode="burp" type="button">Burp Suite</button>
       </div>
-      <div class="form-row" style="margin-top:12px">
+      <div class="section-divider"></div>
+      <div class="form-row">
         <input id="proxy-profile-name" placeholder="Profile name" autocomplete="off">
         <select id="proxy-type">
           <option value="http">HTTP</option>
@@ -175,13 +180,14 @@
         <input id="proxy-exclude" placeholder="Exclude patterns (comma-sep, e.g. *.google.com)" autocomplete="off">
       </div>
       <div class="row-actions">
-        <button id="proxy-save-btn" class="primary">Save Profile</button>
+        <button id="proxy-save-btn" class="primary" type="button">Save Profile</button>
       </div>
       <div id="proxy-profiles-list" class="proxy-profiles-list"></div>
     </div>
 
     <div class="stack-section" id="profiles-ua">
       <h3>User-Agent Switcher</h3>
+      <div id="ua-status" class="ua-status"></div>
       <div class="form-row">
         <select id="ua-preset">
           <option value="">— Select preset —</option>
@@ -196,16 +202,22 @@
           <option value="android-chrome">Pixel 9 — Chrome (Android 16)</option>
           <option value="samsung-browser">Galaxy S24 Ultra — Samsung Browser 28</option>
         </select>
-        <button id="ua-apply-btn" class="primary">Apply</button>
-        <button id="ua-reset-btn" class="danger">Reset</button>
       </div>
-      <input id="ua-custom" placeholder="Or paste a custom User-Agent string…" autocomplete="off">
       <div class="form-row">
-        <input id="ua-profile-name" placeholder="User-Agent profile name" autocomplete="off">
+        <input id="ua-custom" placeholder="Or paste a custom User-Agent string…" autocomplete="off">
+      </div>
+      <div class="row-actions">
+        <button id="ua-apply-btn" class="primary" type="button">Apply</button>
+        <button id="ua-reset-btn" class="danger" type="button">Reset to Default</button>
+      </div>
+      <div class="section-divider"></div>
+      <div class="form-row">
+        <input id="ua-profile-name" placeholder="Profile name" autocomplete="off">
+      </div>
+      <div class="row-actions">
         <button id="ua-save-btn" class="primary" type="button">Save UA Profile</button>
       </div>
       <div id="ua-profiles-list" class="ua-profiles-list"></div>
-      <div id="ua-status" class="ua-status"></div>
     </div>
 
     <div class="stack-section" id="profiles-roles">
@@ -230,7 +242,7 @@
       </div>
       <div class="row-actions">
         <button id="role-save-btn" class="primary" type="button">Save Role</button>
-        <button id="role-edit-cancel" class="hidden" type="button">Cancel edit</button>
+        <button id="role-edit-cancel" class="hidden" type="button">Cancel Edit</button>
         <button id="role-clear-btn" class="danger" type="button">Clear All</button>
       </div>
       <div id="roles-list" class="roles-list"></div>
@@ -244,11 +256,13 @@
       </div>
       <div id="hprof-rows" class="hprof-rows"></div>
       <div class="row-actions">
-        <button id="hprof-add-row" type="button">+ Add Header</button>
+        <button id="hprof-add-row" class="secondary" type="button">+ Add Header</button>
         <button id="hprof-save-btn" class="primary" type="button">Save Profile</button>
-        <button id="hprof-eject-btn" class="danger" type="button">Eject</button>
       </div>
       <div id="hprof-list" class="hprof-list"></div>
+      <div class="row-actions">
+        <button id="hprof-eject-btn" class="danger" type="button">⊘ Eject Active Injection</button>
+      </div>
     </div>
   </div>
 
