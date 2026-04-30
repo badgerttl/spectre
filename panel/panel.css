@@ -737,6 +737,42 @@ pre.code-block {
 ::-webkit-scrollbar-thumb { background: var(--bg3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--border); }
 
+/* ── Header Profiles ───────────────────────────────────────────────── */
+.hprof-rows { display: flex; flex-direction: column; gap: var(--space-xs); }
+.hprof-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+}
+.hprof-row input { flex: 1; min-width: 0; }
+.hprof-row .hprof-remove {
+  flex-shrink: 0;
+  font-size: 13px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--red);
+  border-color: var(--red);
+}
+.hprof-list { display: flex; flex-direction: column; gap: var(--space-sm); }
+.hprof-profile-row {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  align-items: center;
+  background: var(--bg);
+  transition: background .15s;
+}
+.hprof-profile-row:hover { background: rgba(255,255,255,.02); }
+.hprof-profile-row .hpname { font-weight: 600; color: var(--text); flex: 1; font-size: 13px; }
+.hprof-profile-row .hpdetail { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+.hprof-profile-row.active-hprof { border-color: var(--green); background: rgba(76,175,80,.1); }
+.hprof-profile-row.active-hprof .hpname { color: var(--green); }
+.hprof-profile-row.active-hprof::after {
+  content: '● ACTIVE'; font-size: 10px; font-weight: 700; color: var(--green); letter-spacing: .5px;
+}
+
 /* ── Payload Library ───────────────────────────────────────────────── */
 .payload-list {
   display: flex;

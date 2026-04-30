@@ -24,6 +24,9 @@
       <button id="cookies-refresh">⟳ Refresh</button>
       <button id="cookies-add">+ Add</button>
       <button id="cookies-clear" class="danger">Clear</button>
+      <button id="cookies-export">↓ Export</button>
+      <button id="cookies-import-btn">↑ Import</button>
+      <input type="file" id="cookies-import-input" accept=".json" style="display:none">
       <input id="cookies-filter" placeholder="Filter name / value…" autocomplete="off">
     </div>
     <div class="stor-list">
@@ -129,10 +132,16 @@
 
   <!-- ═══ PROFILES ════════════════════════════════════════════════════════ -->
   <div id="tab-profiles" class="tab-pane hidden">
+    <div class="toolbar">
+      <button id="profiles-export-btn">↓ Export All</button>
+      <button id="profiles-import-btn">↑ Import JSON</button>
+      <input type="file" id="profiles-import-input" accept=".json" style="display:none">
+    </div>
     <div class="section-nav">
       <a class="section-jump" data-target="profiles-proxy">⌄ Proxy</a>
       <a class="section-jump" data-target="profiles-ua">⌄ User-Agent</a>
       <a class="section-jump" data-target="profiles-roles">⌄ Role Switcher</a>
+      <a class="section-jump" data-target="profiles-headers">⌄ Header Injection</a>
     </div>
 
     <div class="stack-section" id="profiles-proxy">
@@ -225,6 +234,21 @@
         <button id="role-clear-btn" class="danger" type="button">Clear All</button>
       </div>
       <div id="roles-list" class="roles-list"></div>
+    </div>
+
+    <div class="stack-section" id="profiles-headers">
+      <h3>Header Injection</h3>
+      <div class="form-row">
+        <input id="hprof-name" placeholder="Profile name" autocomplete="off">
+        <input id="hprof-domain" placeholder="Domain (blank = current site)" autocomplete="off">
+      </div>
+      <div id="hprof-rows" class="hprof-rows"></div>
+      <div class="row-actions">
+        <button id="hprof-add-row" type="button">+ Add Header</button>
+        <button id="hprof-save-btn" class="primary" type="button">Save Profile</button>
+        <button id="hprof-eject-btn" class="danger" type="button">Eject</button>
+      </div>
+      <div id="hprof-list" class="hprof-list"></div>
     </div>
   </div>
 

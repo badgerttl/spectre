@@ -18,33 +18,25 @@ function prettyJSON(str) {
 
 function bg(type, data = {}) {
   return new Promise(resolve =>
-    chrome.runtime.sendMessage({ type, ...data }, r => resolve(r || {}))
+    chrome.runtime.sendMessage({ type, ...data }, r => {
+      if (chrome.runtime.lastError) return resolve({ error: chrome.runtime.lastError.message });
+      resolve(r || {});
+    })
   );
 }
 
 async function getActiveTab() {
-  // lastFocusedWindow is reliable from popup context; currentWindow can return empty
+  // DevTools panel: inspectedWindow.tabId is the correct tab regardless of focus
+  if (typeof chrome.devtools !== 'undefined' && chrome.devtools.inspectedWindow?.tabId) {
+    return chrome.tabs.get(chrome.devtools.inspectedWindow.tabId).catch(() => null);
+  }
+  // Popup context: lastFocusedWindow is reliable
   const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   return tabs[0] ?? null;
 }
 
 function isHttpUrl(url) {
   return typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
-}
-
-async function evalPage(code) {
-  const tab = await getActiveTab();
-  const url = tab?.url ?? '';
-  if (!tab?.id || !isHttpUrl(url)) {
-    throw new Error('Navigate to a real http/https page first.');
-  }
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    world: 'MAIN',
-    func: c => { try { return eval(c); } catch (e) { return String(e); } },
-    args: [code],
-  });
-  return results?.[0]?.result ?? null;
 }
 
 // execPage injects a real function (no eval) — works on sites that block eval (e.g. GitHub CSP)
@@ -629,9 +621,8 @@ const Recon = {
   async techStack() {
     await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
 
-    // Fetch response headers via background
-    const tab = await getActiveTab();
-    const pageUrl = tab?.url ?? '';
+    // Fetch response headers via background (state.tabUrl set by assertScriptable)
+    const pageUrl = state.tabUrl;
     let respHeaders = {};
     if (isHttpUrl(pageUrl)) {
       const resp = await bg('FETCH', { url: pageUrl }).catch(() => null);
@@ -905,9 +896,8 @@ const Recon = {
   },
 
   async sourceScan() {
-    const freshTab = await getActiveTab();
-    const url = freshTab?.url ?? '';
-    if (!isHttpUrl(url)) { toast('Navigate to a real http/https page first.', 'error'); return; }
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    const url = state.tabUrl;
     toast('Fetching source…', 'info');
     const { body = '', error } = await bg('FETCH', { url });
     if (error) { toast(`Fetch error: ${error}`, 'error'); return; }
@@ -1096,11 +1086,9 @@ const Recon = {
       } catch { return '{}'; }
     }).catch(() => '{}');
 
-    const tab = await getActiveTab();
-    const pageUrl = tab?.url ?? '';
     let source = '';
-    if (isHttpUrl(pageUrl)) {
-      const resp = await bg('FETCH', { url: pageUrl, maxBody: 150000 }).catch(() => null);
+    if (isHttpUrl(state.tabUrl)) {
+      const resp = await bg('FETCH', { url: state.tabUrl, maxBody: 150000 }).catch(() => null);
       source = resp?.body || '';
     }
 
@@ -1641,6 +1629,119 @@ const Auth = {
     this.renderRoles();
   },
 
+};
+
+// ─── Header Profiles ─────────────────────────────────────────────────────────
+
+const HeaderProfiles = {
+  profiles: [],
+  activeId: null,
+  _formRows: [],
+
+  addFormRow(name = '', value = '') {
+    const idx = this._formRows.length;
+    this._formRows.push({ name, value });
+    const row = document.createElement('div');
+    row.className = 'hprof-row';
+    row.dataset.idx = idx;
+    row.innerHTML = `
+      <input class="hprof-hname" placeholder="Header name (e.g. X-Forwarded-For)" value="${esc(name)}" autocomplete="off">
+      <input class="hprof-hvalue" placeholder="Value" value="${esc(value)}" autocomplete="off">
+      <button class="sm danger hprof-remove" type="button" title="Remove">✕</button>`;
+    row.querySelector('.hprof-remove').addEventListener('click', () => {
+      row.remove();
+      this._formRows.splice(idx, 1);
+    });
+    $('hprof-rows').appendChild(row);
+  },
+
+  collectFormRows() {
+    return Array.from($('hprof-rows').querySelectorAll('.hprof-row')).map(row => ({
+      name:  row.querySelector('.hprof-hname').value.trim(),
+      value: row.querySelector('.hprof-hvalue').value.trim(),
+    })).filter(h => h.name);
+  },
+
+  async saveProfile() {
+    const name    = $('hprof-name').value.trim();
+    const domain  = $('hprof-domain').value.trim();
+    const headers = this.collectFormRows();
+    if (!name)          { toast('Profile name required', 'error'); return; }
+    if (!headers.length){ toast('Add at least one header', 'error'); return; }
+    this.profiles.push({ id: Date.now(), name, domain: domain || null, headers });
+    await chrome.storage.local.set({ headerProfiles: this.profiles });
+    $('hprof-name').value = '';
+    $('hprof-domain').value = '';
+    $('hprof-rows').innerHTML = '';
+    this._formRows = [];
+    bg('SYNC_ROLE_MENUS');
+    toast('Header profile saved', 'success');
+    this.renderProfiles();
+  },
+
+  async applyProfile(id) {
+    const profile = this.profiles.find(p => p.id === id);
+    if (!profile) return;
+    const tabDomain = state.tabUrl ? new URL(state.tabUrl).hostname : '';
+    const domain = profile.domain || tabDomain;
+    if (!domain) { toast('No domain — navigate to a page first', 'error'); return; }
+    const { error } = await bg('INJECT_HEADERS', { headers: profile.headers, domain });
+    if (error) { toast(`Header inject error: ${error}`, 'error'); return; }
+    this.activeId = id;
+    await chrome.storage.local.set({ activeHeaderProfileId: id });
+    bg('SYNC_ROLE_MENUS');
+    toast(`${profile.name} applied → ${domain}`, 'success');
+    this.renderProfiles();
+  },
+
+  async ejectProfile() {
+    await bg('EJECT_HEADERS');
+    this.activeId = null;
+    await chrome.storage.local.remove('activeHeaderProfileId');
+    bg('SYNC_ROLE_MENUS');
+    toast('Header injection ejected', 'success');
+    this.renderProfiles();
+  },
+
+  async deleteProfile(id) {
+    this.profiles = this.profiles.filter(p => p.id !== id);
+    await chrome.storage.local.set({ headerProfiles: this.profiles });
+    if (this.activeId === id) {
+      await bg('EJECT_HEADERS');
+      this.activeId = null;
+      await chrome.storage.local.remove('activeHeaderProfileId');
+    }
+    bg('SYNC_ROLE_MENUS');
+    this.renderProfiles();
+  },
+
+  async loadProfiles() {
+    const { headerProfiles = [], activeHeaderProfileId = null } =
+      await chrome.storage.local.get(['headerProfiles', 'activeHeaderProfileId']);
+    this.profiles = headerProfiles;
+    this.activeId = activeHeaderProfileId;
+    this.renderProfiles();
+  },
+
+  renderProfiles() {
+    const el = $('hprof-list');
+    if (!this.profiles.length) {
+      el.innerHTML = '<div class="muted" style="font-size:11px;padding:6px 0">No saved header profiles</div>';
+      return;
+    }
+    el.innerHTML = this.profiles.map(p => {
+      const detail = p.headers.map(h => `${h.name}: ${h.value}`).join(', ');
+      const truncated = detail.length > 60 ? detail.slice(0, 57) + '…' : detail;
+      const domainLabel = p.domain || 'current site';
+      return `
+        <div class="hprof-profile-row ${this.activeId === p.id ? 'active-hprof' : ''}">
+          <span class="hpname">${esc(p.name)}</span>
+          <span class="hpdetail" title="${esc(detail)}">${esc(truncated)} <span style="color:var(--yellow)">[${esc(domainLabel)}]</span></span>
+          <button class="sm primary" data-action="hprof-apply" data-hpid="${p.id}">Apply</button>
+          <button class="sm danger" data-action="hprof-del" data-hpid="${p.id}" title="Delete">✕</button>
+        </div>`;
+    }).join('');
+  },
 };
 
 // ─── User-Agent Switcher ──────────────────────────────────────────────────────
@@ -2326,6 +2427,74 @@ const Payloads = {
   },
 };
 
+// ─── Cookie Export / Import ───────────────────────────────────────────────────
+
+function triggerDownload(filename, json) {
+  const blob = new Blob([json], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportCookies() {
+  if (!state.cookiesCache.length) { toast('No cookies to export', 'warn'); return; }
+  const hostname = (() => { try { return new URL(state.tabUrl).hostname; } catch { return 'cookies'; } })();
+  triggerDownload(`cookies-${hostname}-${Date.now()}.json`, JSON.stringify(state.cookiesCache, null, 2));
+  toast(`Exported ${state.cookiesCache.length} cookies`, 'success');
+}
+
+async function importCookies(file) {
+  let cookies;
+  try { cookies = JSON.parse(await file.text()); } catch { toast('Invalid JSON', 'error'); return; }
+  if (!Array.isArray(cookies)) { toast('Expected JSON array', 'error'); return; }
+  let ok = 0;
+  for (const c of cookies) {
+    if (!c.name || !c.domain) continue;
+    const scheme = c.secure ? 'https' : 'http';
+    const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+    const cookie = {
+      url:      `${scheme}://${host}${c.path || '/'}`,
+      name:     c.name, value: c.value || '',
+      domain:   c.domain, path: c.path || '/',
+      httpOnly: !!c.httpOnly, secure: !!c.secure,
+      sameSite: c.sameSite || 'no_restriction',
+    };
+    if (c.expirationDate) cookie.expirationDate = c.expirationDate;
+    const { error } = await bg('SET_COOKIE', { cookie });
+    if (!error) ok++;
+  }
+  await Cookies.load();
+  toast(`Imported ${ok} / ${cookies.length} cookies`, ok === cookies.length ? 'success' : 'warn');
+}
+
+// ─── Profiles Export / Import ─────────────────────────────────────────────────
+
+async function exportProfiles() {
+  const data = await chrome.storage.local.get(['roles', 'uaProfiles', 'proxyProfiles', 'headerProfiles']);
+  triggerDownload(`spectre-profiles-${Date.now()}.json`, JSON.stringify({ version: 1, ...data }, null, 2));
+  toast('Profiles exported', 'success');
+}
+
+async function importProfiles(file) {
+  let data;
+  try { data = JSON.parse(await file.text()); } catch { toast('Invalid JSON', 'error'); return; }
+  const {
+    roles = [], uaProfiles = [], proxyProfiles = [], headerProfiles = [],
+  } = data;
+  await chrome.storage.local.set({ roles, uaProfiles, proxyProfiles, headerProfiles });
+  state.roles = roles;
+  Auth.renderRoles();
+  UserAgent.profiles = uaProfiles;
+  UserAgent.renderProfiles();
+  Proxy.profiles = proxyProfiles;
+  Proxy.renderProfiles();
+  HeaderProfiles.profiles = headerProfiles;
+  HeaderProfiles.renderProfiles();
+  bg('SYNC_ROLE_MENUS');
+  toast(`Imported: ${roles.length} roles, ${uaProfiles.length} UA, ${proxyProfiles.length} proxy, ${headerProfiles.length} header profiles`, 'success');
+}
+
 // ─── Wire-up ──────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -2335,6 +2504,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('cookies-refresh').addEventListener('click', () => Cookies.load());
   $('cookies-add').addEventListener('click', () => Cookies.openEdit(null));
   $('cookies-clear').addEventListener('click', () => Cookies.clearAll());
+  $('cookies-export').addEventListener('click', () => exportCookies());
+  $('cookies-import-btn').addEventListener('click', () => $('cookies-import-input').click());
+  $('cookies-import-input').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) importCookies(f).finally(() => { e.target.value = ''; });
+  });
   $('cookies-filter').addEventListener('input', () => Cookies.render());
   $('ck-save').addEventListener('click', () => Cookies.save());
   $('ck-cancel').addEventListener('click', () => Cookies.closeModal());
@@ -2411,6 +2586,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Auto-load when switching to cookies tab
   document.querySelector('.tab-btn[data-tab="cookies"]').addEventListener('click', () => Cookies.load());
+
+  // Re-populate JWT input from pinned cookie source when switching to JWT tab
+  document.querySelector('.tab-btn[data-tab="jwt"]').addEventListener('click', () => {
+    if (state.jwtSourceCookie !== null && !$('jwt-input').value.trim()) {
+      const c = state.cookiesCache[state.jwtSourceCookie];
+      if (c) { $('jwt-input').value = c.value; JWT.decode(); }
+    }
+  });
 
   // Auto-load when switching to storage tab
   document.querySelector('.tab-btn[data-tab="storage"]').addEventListener('click', async () => {
@@ -2627,6 +2810,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   Proxy.loadSaved();
 
+  // ── Profiles export / import ──
+  $('profiles-export-btn').addEventListener('click', () => exportProfiles());
+  $('profiles-import-btn').addEventListener('click', () => $('profiles-import-input').click());
+  $('profiles-import-input').addEventListener('change', e => {
+    const f = e.target.files[0];
+    if (f) importProfiles(f).finally(() => { e.target.value = ''; });
+  });
+
+  // ── Header Profiles ──
+  $('hprof-add-row').addEventListener('click', () => HeaderProfiles.addFormRow());
+  $('hprof-save-btn').addEventListener('click', () => HeaderProfiles.saveProfile());
+  $('hprof-eject-btn').addEventListener('click', () => HeaderProfiles.ejectProfile());
+  $('hprof-list').addEventListener('click', e => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    const id = +btn.dataset.hpid;
+    switch (btn.dataset.action) {
+      case 'hprof-apply': HeaderProfiles.applyProfile(id); break;
+      case 'hprof-del':   HeaderProfiles.deleteProfile(id); break;
+    }
+  });
+  HeaderProfiles.loadProfiles();
+
   // ── Utils ──
   $('encode-btn').addEventListener('click', () => {
     $('encode-output').value = Encode.encode($('encode-type').value, $('encode-input').value);
@@ -2701,4 +2907,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   Storage.switchView('local');
   Cookies.load();
   Auth.loadRoles();
+
+  // ── Navigation refresh ──
+  async function refreshForNav(url) {
+    const tab = await getActiveTab();
+    state.tabId  = tab?.id ?? state.tabId;
+    state.tabUrl = url ?? tab?.url ?? state.tabUrl;
+    Cookies.load();
+    Storage.switchView(state.storageView);
+  }
+
+  if (typeof chrome.devtools !== 'undefined' && chrome.devtools.network) {
+    chrome.devtools.network.onNavigated.addListener(refreshForNav);
+  } else {
+    chrome.tabs.onUpdated.addListener((tabId, info) => {
+      if (tabId === state.tabId && info.status === 'complete') {
+        refreshForNav(info.url ?? state.tabUrl);
+      }
+    });
+    chrome.tabs.onActivated.addListener(async ({ tabId }) => {
+      const tab = await chrome.tabs.get(tabId).catch(() => null);
+      if (tab) { state.tabId = tab.id; state.tabUrl = tab.url ?? ''; Cookies.load(); Storage.switchView(state.storageView); }
+    });
+  }
 });

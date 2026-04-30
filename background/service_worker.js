@@ -85,6 +85,8 @@ async function buildAllMenus() {
     activeUA = null,
     uaProfiles = [],
     uaCustomAgents = [],
+    headerProfiles = [],
+    activeHeaderProfileId = null,
   } = await chrome.storage.local.get([
     'roles',
     'activeRoleId',
@@ -94,6 +96,8 @@ async function buildAllMenus() {
     'activeUA',
     'uaProfiles',
     'uaCustomAgents',
+    'headerProfiles',
+    'activeHeaderProfileId',
   ]);
   const presetActive = ['direct', 'system', 'burp'].includes(proxyMode);
 
@@ -202,6 +206,25 @@ async function buildAllMenus() {
     });
     chrome.contextMenus.create({ type: 'separator', id: 'role-sep', parentId: 'spectre-roles', contexts: ['action'] });
     chrome.contextMenus.create({ id: 'role-eject', parentId: 'spectre-roles', title: '⊘ Eject auth', contexts: ['action'] });
+  }
+
+  // Header Injection submenu
+  if (headerProfiles.length) {
+    chrome.contextMenus.create({ id: 'spectre-headers', title: 'Spectre Header Injection', contexts: ['action'] });
+    headerProfiles.forEach(profile => {
+      const domainLabel = profile.domain || 'current site';
+      const headerCount = profile.headers?.length ?? 0;
+      chrome.contextMenus.create({
+        id: `hdr-profile-${profile.id}`,
+        parentId: 'spectre-headers',
+        type: 'checkbox',
+        checked: activeHeaderProfileId != null && Number(activeHeaderProfileId) === Number(profile.id),
+        title: `${profile.name}  [${domainLabel}] (${headerCount} header${headerCount !== 1 ? 's' : ''})`,
+        contexts: ['action'],
+      });
+    });
+    chrome.contextMenus.create({ type: 'separator', id: 'hdr-sep', parentId: 'spectre-headers', contexts: ['action'] });
+    chrome.contextMenus.create({ id: 'hdr-eject', parentId: 'spectre-headers', title: '⊘ Eject headers', contexts: ['action'] });
   }
 
   // Utility actions
@@ -439,6 +462,51 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
     return;
   }
 
+  // Header profile eject
+  if (info.menuItemId === 'hdr-eject') {
+    await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [3] }, res); });
+    await new Promise(res => { chrome.storage.local.remove('activeHeaderProfileId', res); });
+    await buildAllMenus();
+    return;
+  }
+
+  // Header profile apply
+  if (info.menuItemId.startsWith('hdr-profile-')) {
+    const profileId = Number(info.menuItemId.replace('hdr-profile-', ''));
+    if (!Number.isNaN(profileId)) {
+      const { headerProfiles = [] } = await chrome.storage.local.get(['headerProfiles']);
+      const profile = headerProfiles.find(p => Number(p.id) === profileId);
+      if (profile?.headers?.length) {
+        let domain = profile.domain;
+        if (!domain) {
+          try { domain = new URL(tab?.url ?? '').hostname; } catch {}
+        }
+        if (domain) {
+          await new Promise(res => {
+            chrome.declarativeNetRequest.updateSessionRules({
+              removeRuleIds: [3],
+              addRules: [{
+                id: 3,
+                priority: 3,
+                action: {
+                  type: 'modifyHeaders',
+                  requestHeaders: profile.headers.flatMap(h => [
+                    { header: h.name, operation: 'remove' },
+                    { header: h.name, operation: 'set', value: h.value },
+                  ]),
+                },
+                condition: { requestDomains: [domain], resourceTypes: ALL_RESOURCE_TYPES },
+              }],
+            }, res);
+          });
+          await new Promise(res => { chrome.storage.local.set({ activeHeaderProfileId: profile.id }, res); });
+          await buildAllMenus();
+        }
+      }
+    }
+    return;
+  }
+
   // Role eject
   if (info.menuItemId === 'role-eject') {
     await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1] }, res); });
@@ -593,6 +661,40 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         removeRuleIds: [2],
       }, () => {
         buildAllMenus().then(() => sendResponse({ ok: true }));
+      });
+      return true;
+    }
+
+    case 'INJECT_HEADERS': {
+      const { headers, domain } = msg;
+      if (!headers?.length || !domain) { sendResponse({ ok: false, error: 'headers and domain required' }); return; }
+      chrome.declarativeNetRequest.updateSessionRules({
+        removeRuleIds: [3],
+        addRules: [{
+          id: 3,
+          priority: 3,
+          action: {
+            type: 'modifyHeaders',
+            requestHeaders: headers.flatMap(h => [
+              { header: h.name, operation: 'remove' },
+              { header: h.name, operation: 'set', value: h.value },
+            ]),
+          },
+          condition: {
+            requestDomains: [domain],
+            resourceTypes: ALL_RESOURCE_TYPES,
+          },
+        }],
+      }, () => {
+        const err = chrome.runtime.lastError?.message || null;
+        sendResponse({ ok: !err, error: err });
+      });
+      return true;
+    }
+
+    case 'EJECT_HEADERS': {
+      chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [3] }, () => {
+        sendResponse({ ok: true });
       });
       return true;
     }
