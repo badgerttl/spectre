@@ -15,38 +15,46 @@
       <span class="brand-text">SPECTRE</span>
     </div>
 
-    <button class="nav-btn active" data-tab="cookies">
-      <span class="nav-icon">🍪</span>
+    <button class="nav-btn active" data-tab="recon">
+      <span class="nav-icon icon-recon" aria-hidden="true"></span>
+      <span class="nav-label">Recon</span>
+    </button>
+    <button class="nav-btn" data-tab="graphql">
+      <span class="nav-icon icon-graphql" aria-hidden="true"></span>
+      <span class="nav-label">GraphQL</span>
+    </button>
+    <button class="nav-btn" data-tab="cookies">
+      <span class="nav-icon icon-cookies" aria-hidden="true"></span>
       <span class="nav-label">Cookies</span>
     </button>
     <button class="nav-btn" data-tab="storage">
-      <span class="nav-icon">🗄</span>
+      <span class="nav-icon icon-storage" aria-hidden="true"></span>
       <span class="nav-label">Storage</span>
     </button>
     <button class="nav-btn" data-tab="jwt">
-      <span class="nav-icon">🔐</span>
+      <span class="nav-icon icon-jwt" aria-hidden="true"></span>
       <span class="nav-label">JWT</span>
     </button>
-    <button class="nav-btn" data-tab="recon">
-      <span class="nav-icon">🔍</span>
-      <span class="nav-label">Recon</span>
+    <button class="nav-btn" data-tab="dispatch">
+      <span class="nav-icon icon-dispatch" aria-hidden="true"></span>
+      <span class="nav-label">Dispatch</span>
+    </button>
+    <button class="nav-btn" data-tab="payloads">
+      <span class="nav-icon icon-payloads" aria-hidden="true"></span>
+      <span class="nav-label">Payloads</span>
+    </button>
+    <button class="nav-btn" data-tab="tools">
+      <span class="nav-icon icon-tools" aria-hidden="true"></span>
+      <span class="nav-label">Tools</span>
     </button>
     <button class="nav-btn" data-tab="profiles">
-      <span class="nav-icon">👤</span>
+      <span class="nav-icon icon-profiles" aria-hidden="true"></span>
       <span class="nav-label">Profiles</span>
       <span class="nav-active-dot" id="profiles-active-dot"></span>
     </button>
-    <button class="nav-btn" data-tab="tools">
-      <span class="nav-icon">⚙</span>
-      <span class="nav-label">Tools</span>
-    </button>
-    <button class="nav-btn" data-tab="payloads">
-      <span class="nav-icon">⚡</span>
-      <span class="nav-label">Payloads</span>
-    </button>
 
     <div class="sidebar-spacer"></div>
-    <button id="sidebar-toggle" class="sidebar-toggle" title="Toggle sidebar">‹</button>
+    <button id="sidebar-toggle" class="sidebar-toggle" title="Collapse sidebar" aria-label="Collapse sidebar">Hide</button>
   </nav>
 
   <!-- ═══ CONTENT ════════════════════════════════════════════════════════════ -->
@@ -55,13 +63,13 @@
   <div id="active-bar" class="active-bar empty"></div>
 
   <!-- ═══ COOKIES ═══════════════════════════════════════════════════════ -->
-  <div id="tab-cookies" class="tab-pane active">
+  <div id="tab-cookies" class="tab-pane hidden">
     <div class="toolbar">
-      <button id="cookies-refresh">⟳ Refresh</button>
-      <button id="cookies-add">+ Add</button>
+      <button id="cookies-refresh">Refresh</button>
+      <button id="cookies-add">Add</button>
       <button id="cookies-clear" class="danger">Clear</button>
-      <button id="cookies-export">↓ Export</button>
-      <button id="cookies-import-btn">↑ Import</button>
+      <button id="cookies-export">Export</button>
+      <button id="cookies-import-btn">Import</button>
       <input type="file" id="cookies-import-input" accept=".json" style="display:none">
       <input id="cookies-filter" placeholder="Filter name / value…" autocomplete="off">
     </div>
@@ -73,11 +81,9 @@
   <!-- ═══ STORAGE ═══════════════════════════════════════════════════════ -->
   <div id="tab-storage" class="tab-pane hidden">
     <div class="toolbar">
-      <button id="storage-refresh">⟳ Refresh</button>
-      <button id="storage-add">+ Add</button>
+      <button id="storage-refresh">Refresh</button>
+      <button id="storage-add">Add</button>
       <button id="storage-clear-btn" class="danger">Clear</button>
-      <button id="storage-snapshot-btn" title="Snapshot current storage to track changes">📸 Snapshot</button>
-      <button id="storage-clear-diff" class="hidden secondary" type="button" title="Clear diff snapshot">✕ Diff</button>
       <input id="storage-filter" placeholder="Filter key / value…" autocomplete="off">
     </div>
     <div class="toolbar storage-switch-bar">
@@ -131,10 +137,29 @@
           </select>
         </label>
         <div id="jwt-secret-wrap">
-          <label>Secret<input id="jwt-secret" placeholder="HMAC secret" autocomplete="off"></label>
+          <label>Secret<textarea id="jwt-secret" rows="3" placeholder="HMAC secret" spellcheck="false"></textarea></label>
         </div>
         <button id="jwt-sign-btn" class="primary">Sign / Forge</button>
         <button id="jwt-verify-btn">Verify</button>
+      </div>
+
+      <div class="jwt-attack-panel">
+        <div class="section-label">Attack Builder</div>
+        <div class="jwt-attack-grid">
+          <label>Technique
+            <select id="jwt-attack-type">
+              <option value="alg-none">alg none variants</option>
+              <option value="kid-traversal">kid path traversal</option>
+            </select>
+          </label>
+          <label>kid
+            <input id="jwt-attack-kid" placeholder="../../../../dev/null" autocomplete="off">
+          </label>
+        </div>
+        <textarea id="jwt-attack-material" rows="3" spellcheck="false" placeholder="HMAC secret for kid traversal; leave blank to sign with a null byte"></textarea>
+        <div class="row-actions">
+          <button id="jwt-attack-apply" class="primary">Build Attack Token</button>
+        </div>
       </div>
 
       <div id="jwt-verify-result" class="hidden"></div>
@@ -142,50 +167,234 @@
       <div class="section-label">Output Token</div>
       <textarea id="jwt-output" rows="6" readonly spellcheck="false"></textarea>
       <div class="row-actions">
-        <button id="jwt-copy-btn" title="Copy" aria-label="Copy">⧉</button>
+        <button id="jwt-copy-btn" title="Copy" aria-label="Copy">Copy</button>
         <button id="jwt-use-btn">Use as Input</button>
-        <button id="jwt-to-cookie-btn" class="primary hidden">› Send back to Cookie</button>
+        <button id="jwt-to-cookie-btn" class="primary hidden">Send back to Cookie</button>
       </div>
       <div id="jwt-cookie-source" class="jwt-cookie-source hidden"></div>
     </div>
+
+    <div class="jwt-guide">
+        <div class="section-label">Attack Walkthroughs</div>
+        <div class="section-label">Local</div>
+        <details class="jwt-guide-item">
+          <summary>none algorithm</summary>
+          <ol>
+            <li>Capture a request that carries the JWT, then paste the token into Spectre and click Decode.</li>
+            <li>Confirm the decoded header and payload look like the token you intend to test.</li>
+            <li>Choose a none casing in Algorithm, such as <code>none</code>, <code>None</code>, or <code>NONE</code>.</li>
+            <li>Set Attack Builder technique to <code>alg none variants</code>.</li>
+            <li>Click Build Attack Token. Spectre rewrites the header algorithm and removes the signature.</li>
+            <li>Use Copy, Send back to Cookie, or paste the token into the original request header.</li>
+            <li>Replay the original request and compare status code, response body, and authorization behavior.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>HS256 signing</summary>
+          <ol>
+            <li>Paste the captured JWT into Spectre and click Decode.</li>
+            <li>Edit the Payload claims you want to test, such as <code>role</code>, <code>scope</code>, <code>sub</code>, or <code>exp</code>.</li>
+            <li>Choose Algorithm <code>HS256</code>.</li>
+            <li>Paste the known, guessed, or cracked HMAC secret into Secret.</li>
+            <li>Click Sign / Forge to create a token with a valid HMAC signature for the edited claims.</li>
+            <li>Copy the output token back into the same cookie or authorization header used by the original request.</li>
+            <li>Replay the request and compare the application response to the unmodified token.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>kid path traversal</summary>
+          <ol>
+            <li>Paste the captured JWT into Spectre and click Decode.</li>
+            <li>Set Attack Builder technique to <code>kid path traversal</code>.</li>
+            <li>Set kid to the file path you want the server to resolve, such as <code>../../../../dev/null</code>.</li>
+            <li>Leave HMAC secret blank when testing <code>/dev/null</code>. Spectre signs the token with a single null byte.</li>
+            <li>If testing another readable file, paste the expected file contents into HMAC secret so the signature matches that key material.</li>
+            <li>Click Build Attack Token and send the output token in the original cookie or authorization header.</li>
+            <li>Replay the request and look for accepted authorization, changed identity, or server errors that reveal file lookup behavior.</li>
+          </ol>
+        </details>
+        <div class="section-label">Other attacks with Burp JWT Editor</div>
+        <details class="jwt-guide-item">
+          <summary>Key confusion</summary>
+          <ol>
+            <li>Install PortSwigger's JWT Editor extension from the BApp Store.</li>
+            <li>Proxy the application through Burp, capture a request with a JWT, and send it to Repeater.</li>
+            <li>Confirm the original token uses an asymmetric algorithm such as <code>RS256</code>, <code>RS384</code>, <code>RS512</code>, <code>ES256</code>, or <code>PS256</code>.</li>
+            <li>Obtain the server's public key from a JWKS endpoint, certificate, mobile app bundle, source leak, or public metadata endpoint.</li>
+            <li>Open JWT Editor's key store and create a new symmetric key using the public key bytes as the HMAC secret.</li>
+            <li>In Repeater, switch to JWT Editor's token editor and change the header <code>alg</code> to <code>HS256</code>.</li>
+            <li>Edit one low-risk claim first, such as extending <code>exp</code> or changing a test-only role.</li>
+            <li>Sign the token with the HMAC key created from the public key.</li>
+            <li>Send the request. A vulnerable server accepts the HS256 token even though it should only verify the original asymmetric algorithm.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>Embedded JWK</summary>
+          <ol>
+            <li>Send a JWT-bearing request to Burp Repeater and open the token in JWT Editor.</li>
+            <li>Create a new attacker-controlled RSA key pair in JWT Editor's key store.</li>
+            <li>Edit the JWT header and add a <code>jwk</code> parameter containing the public portion of your generated key.</li>
+            <li>Set <code>kid</code> to match the generated key id if the tool does not add it automatically.</li>
+            <li>Change the payload claim you want to validate, such as <code>role</code>, <code>scope</code>, or <code>sub</code>.</li>
+            <li>Sign the token with the matching private key from JWT Editor.</li>
+            <li>Send the request from Repeater. A vulnerable server trusts the embedded public key instead of using its own trusted key set.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>jku header</summary>
+          <ol>
+            <li>Create or import an attacker-controlled RSA key pair in JWT Editor.</li>
+            <li>Export the public key as a JWKS document and host it at an HTTPS URL the target server can reach.</li>
+            <li>Send the original JWT request to Repeater and open the token in JWT Editor.</li>
+            <li>Edit the JWT header and add <code>jku</code> with the URL of your hosted JWKS document.</li>
+            <li>Set <code>kid</code> to the key id inside your hosted JWKS.</li>
+            <li>Edit the payload claim you want to test.</li>
+            <li>Sign the token with the private key that matches the hosted JWKS public key.</li>
+            <li>Send the request and check whether the server fetches and trusts the remote key URL.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>x5u header</summary>
+          <ol>
+            <li>Create an attacker-controlled certificate and private key, then make the certificate available at an HTTPS URL the target can reach.</li>
+            <li>Import the matching private key into JWT Editor.</li>
+            <li>Send the original JWT request to Repeater and open the token in JWT Editor.</li>
+            <li>Edit the JWT header and add <code>x5u</code> with the URL of the hosted certificate or certificate chain.</li>
+            <li>Set the signing algorithm to the algorithm expected by the target, commonly an RSA algorithm such as <code>RS256</code>.</li>
+            <li>Edit one claim in the payload so you can identify whether the forged token was accepted.</li>
+            <li>Sign the token with the private key that matches the hosted certificate.</li>
+            <li>Send the request and check whether the server trusts the remote certificate URL.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>kid SQL injection</summary>
+          <ol>
+            <li>Send a JWT-bearing request to Repeater and open the token in JWT Editor.</li>
+            <li>Identify whether the JWT header has a <code>kid</code> value. If it does not, add one for testing.</li>
+            <li>Change only the <code>kid</code> value first, using a harmless marker such as <code>spectre-test</code>, then send the request and note the baseline error.</li>
+            <li>Replace <code>kid</code> with SQL probe payloads such as <code>'</code>, <code>"</code>, or <code>' OR '1'='1</code>.</li>
+            <li>If the server still requires a valid signature, sign the token with the same HMAC secret or key material used by the original token.</li>
+            <li>Send each request separately from Repeater and compare status codes, database errors, timing changes, and authorization behavior.</li>
+            <li>If a probe changes behavior, narrow it down with one-character changes so you can distinguish SQL handling from normal unknown-key errors.</li>
+          </ol>
+        </details>
+        <details class="jwt-guide-item">
+          <summary>Claim tampering</summary>
+          <ol>
+            <li>Send the original JWT request to Repeater and duplicate the tab so one copy stays unchanged.</li>
+            <li>Open the duplicate token in JWT Editor and inspect the payload claims.</li>
+            <li>Change one claim at a time, starting with low-noise fields such as <code>exp</code>, <code>nbf</code>, or <code>aud</code>.</li>
+            <li>Move to authorization claims such as <code>role</code>, <code>scope</code>, <code>permissions</code>, <code>sub</code>, <code>tenant</code>, or <code>account_id</code>.</li>
+            <li>Sign the token with the appropriate key in JWT Editor. If you do not have the key, combine this test with a discovered signing weakness such as key confusion, embedded JWK, or an accepted none algorithm.</li>
+            <li>Send the modified request and compare it against the unchanged Repeater tab.</li>
+            <li>Record which claim changed behavior and whether the server enforced the value cryptographically, server-side, or not at all.</li>
+          </ol>
+        </details>
+      </div>
   </div>
 
   <!-- ═══ RECON ══════════════════════════════════════════════════════════ -->
-  <div id="tab-recon" class="tab-pane hidden">
+  <div id="tab-recon" class="tab-pane active">
     <div class="toolbar">
       <button id="recon-run-all" class="primary">Run All</button>
       <button id="recon-copy-all">Copy All</button>
-      <button id="recon-tech">Tech Stack</button>
-      <button id="recon-source">Source Scan</button>
-      <button id="recon-links">Spider Links</button>
-      <button id="recon-forms">Forms &amp; Inputs</button>
-      <button id="recon-hidden">Hidden Fields</button>
-      <button id="recon-domxss">DOM XSS</button>
-      <button id="recon-secrets">Secrets</button>
-      <button id="recon-storage-scan">Storage Scan</button>
+      <button id="recon-export-md">Export MD</button>
+      <button id="recon-export-json">Export JSON</button>
+      <button id="recon-collapse-all">Collapse All</button>
       <button id="recon-clear" class="danger">Clear</button>
     </div>
     <div id="recon-output" class="recon-output"></div>
   </div>
 
+  <!-- ═══ GRAPHQL ══════════════════════════════════════════════════════════ -->
+  <div id="tab-graphql" class="tab-pane hidden">
+    <div class="toolbar">
+      <button id="graphql-detect" class="primary">Detect Endpoints</button>
+      <button id="graphql-introspect">Introspect</button>
+      <button id="graphql-clear" class="danger">Clear</button>
+    </div>
+    <div class="form-row graphql-url-row" id="graphql-endpoint-row">
+      <select id="graphql-method">
+        <option value="POST">POST</option>
+        <option value="GET">GET</option>
+      </select>
+      <input id="graphql-url" placeholder="GraphQL endpoint URL" autocomplete="off" list="graphql-url-history">
+      <datalist id="graphql-url-history"></datalist>
+    </div>
+    <div id="graphql-search-bar" class="toolbar hidden">
+      <input id="graphql-schema-search" placeholder="Search fields and types…" autocomplete="off" style="flex:1">
+      <button id="graphql-schema-search-clear" type="button">Clear</button>
+    </div>
+    <div id="graphql-output" class="graphql-output">
+      <div class="muted" id="graphql-empty">Detect GraphQL endpoints from the current page, then run introspection to explore the schema.</div>
+    </div>
+  </div>
+
+  <!-- ═══ DISPATCH ══════════════════════════════════════════════════════════ -->
+  <div id="tab-dispatch" class="tab-pane hidden">
+    <div class="dispatch-request">
+      <div class="dispatch-url-bar">
+        <select id="dispatch-method">
+          <option>GET</option>
+          <option>POST</option>
+          <option>PUT</option>
+          <option>PATCH</option>
+          <option>DELETE</option>
+          <option>HEAD</option>
+          <option>OPTIONS</option>
+        </select>
+        <input id="dispatch-url" placeholder="https://target/path" autocomplete="off">
+        <button id="dispatch-send" class="primary" type="button">Send</button>
+        <button id="dispatch-import-curl" type="button">Import curl</button>
+      </div>
+      <div id="curl-import-panel" class="curl-import-panel hidden">
+        <textarea id="curl-import-input" rows="4" spellcheck="false" placeholder="Paste curl command…"></textarea>
+        <div class="row-actions">
+          <button id="curl-import-load" class="primary" type="button">Load</button>
+          <button id="curl-import-cancel" type="button">Cancel</button>
+        </div>
+      </div>
+      <div class="dispatch-panes">
+        <div class="dispatch-pane">
+          <div class="dispatch-pane-tabs">
+            <button class="dispatch-tab-btn active" data-pane="headers">Headers</button>
+            <button class="dispatch-tab-btn" data-pane="body">Body</button>
+          </div>
+          <textarea id="dispatch-headers" class="dispatch-textarea dispatch-pane-headers" spellcheck="false" placeholder="Header-Name: value&#10;Content-Type: application/json"></textarea>
+          <textarea id="dispatch-body" class="dispatch-textarea dispatch-pane-body hidden" spellcheck="false" placeholder="Request body…"></textarea>
+        </div>
+        <div class="dispatch-response-pane">
+          <div class="dispatch-response-toolbar">
+            <span id="dispatch-status-badge" class="dispatch-status-badge hidden"></span>
+            <span class="dispatch-spacer"></span>
+            <button id="dispatch-copy-curl" type="button">Copy curl</button>
+            <button id="dispatch-load-current" type="button">Load URL</button>
+            <button id="dispatch-clear" type="button">Clear</button>
+          </div>
+          <div id="dispatch-response" class="dispatch-response muted">No response yet</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ═══ PROFILES ════════════════════════════════════════════════════════ -->
   <div id="tab-profiles" class="tab-pane hidden">
     <div class="toolbar">
-      <button id="profiles-export-btn">↓ Export All</button>
-      <button id="profiles-import-btn">↑ Import JSON</button>
+      <button id="profiles-export-btn">Export All</button>
+      <button id="profiles-import-btn">Import JSON</button>
       <input type="file" id="profiles-import-input" accept=".json" style="display:none">
     </div>
     <div class="section-nav">
-      <a class="section-jump" data-target="profiles-proxy">⌄ Proxy</a>
-      <a class="section-jump" data-target="profiles-ua">⌄ User-Agent</a>
-      <a class="section-jump" data-target="profiles-roles">⌄ Role Switcher</a>
-      <a class="section-jump" data-target="profiles-headers">⌄ Header Injection</a>
+      <a class="section-jump" data-target="profiles-proxy">Proxy</a>
+      <a class="section-jump" data-target="profiles-ua">User-Agent</a>
+      <a class="section-jump" data-target="profiles-roles">Role Switcher</a>
+      <a class="section-jump" data-target="profiles-headers">Header Injection</a>
     </div>
 
     <div class="stack-section" id="profiles-proxy">
       <h3>Proxy</h3>
       <div id="proxy-status-bar" class="proxy-status off">
-        <span id="proxy-status-icon">○</span>
+        <span id="proxy-status-icon" aria-hidden="true"></span>
         <span id="proxy-status-text">Direct (no proxy)</span>
       </div>
       <div class="proxy-quick-btns">
@@ -224,17 +433,17 @@
       <div id="ua-status" class="ua-status"></div>
       <div class="form-row">
         <select id="ua-preset">
-          <option value="">— Select preset —</option>
-          <option value="chrome-win">Chrome 147 — Windows 10</option>
-          <option value="chrome-mac">Chrome 147 — macOS</option>
-          <option value="firefox-win">Firefox 150 — Windows 10</option>
-          <option value="safari-mac">Safari 26.4 — macOS Sonoma</option>
-          <option value="edge-win">Edge 147 — Windows 11</option>
+          <option value="">Select preset</option>
+          <option value="chrome-win">Chrome 147 - Windows 10</option>
+          <option value="chrome-mac">Chrome 147 - macOS</option>
+          <option value="firefox-win">Firefox 150 - Windows 10</option>
+          <option value="safari-mac">Safari 26.4 - macOS Sonoma</option>
+          <option value="edge-win">Edge 147 - Windows 11</option>
           <option value="curl">curl/8.13.0</option>
-          <option value="iphone-safari">iPhone — Safari (iOS 26.4)</option>
-          <option value="iphone-chrome">iPhone — Chrome (iOS 26.4)</option>
-          <option value="android-chrome">Pixel 9 — Chrome (Android 16)</option>
-          <option value="samsung-browser">Galaxy S24 Ultra — Samsung Browser 28</option>
+          <option value="iphone-safari">iPhone - Safari (iOS 26.4)</option>
+          <option value="iphone-chrome">iPhone - Chrome (iOS 26.4)</option>
+          <option value="android-chrome">Pixel 9 - Chrome (Android 16)</option>
+          <option value="samsung-browser">Galaxy S24 Ultra - Samsung Browser 28</option>
         </select>
       </div>
       <div class="form-row">
@@ -290,12 +499,12 @@
       </div>
       <div id="hprof-rows" class="hprof-rows"></div>
       <div class="row-actions">
-        <button id="hprof-add-row" class="secondary" type="button">+ Add Header</button>
+        <button id="hprof-add-row" class="secondary" type="button">Add Header</button>
         <button id="hprof-save-btn" class="primary" type="button">Save Profile</button>
       </div>
       <div id="hprof-list" class="hprof-list"></div>
       <div class="row-actions">
-        <button id="hprof-eject-btn" class="danger" type="button">⊘ Eject Active Injection</button>
+        <button id="hprof-eject-btn" class="danger" type="button">Eject Active Injection</button>
       </div>
     </div>
   </div>
@@ -303,8 +512,10 @@
   <!-- ═══ TOOLS ══════════════════════════════════════════════════════════ -->
   <div id="tab-tools" class="tab-pane hidden">
     <div class="section-nav">
-      <a class="section-jump" data-target="tools-encode">⌄ Encode / Decode</a>
-      <a class="section-jump" data-target="tools-hash">⌄ Hash</a>
+      <a class="section-jump" data-target="tools-encode">Encode / Decode</a>
+      <a class="section-jump" data-target="tools-hash">Hash</a>
+      <a class="section-jump" data-target="tools-timestamp">Timestamp</a>
+      <a class="section-jump" data-target="tools-diff">Diff</a>
     </div>
 
     <div class="stack-section" id="tools-encode">
@@ -319,9 +530,9 @@
           <option value="hex">Hex</option>
           <option value="unicode">Unicode escape</option>
         </select>
-        <button id="encode-btn" title="Encode">Encode ˅</button>
-        <button id="decode-btn" title="Decode">Decode ˄</button>
-        <button id="encode-swap-btn" title="Swap">↕ Swap</button>
+        <button id="encode-btn" title="Encode">Encode</button>
+        <button id="decode-btn" title="Decode">Decode</button>
+        <button id="encode-swap-btn" title="Swap input and output">Swap</button>
       </div>
       <textarea id="encode-input" rows="10" placeholder="Input…" spellcheck="false"></textarea>
       <textarea id="encode-output" rows="10" placeholder="Output…" spellcheck="false" readonly></textarea>
@@ -347,6 +558,37 @@
       <input id="hash-input" placeholder="Input string or hash to identify…" spellcheck="false">
       <div id="hash-output" class="hash-output"></div>
     </div>
+
+    <div class="stack-section" id="tools-timestamp">
+      <h3>Timestamp</h3>
+      <div class="form-row">
+        <input id="ts-input" placeholder="Unix seconds, milliseconds, or date string…" autocomplete="off">
+        <button id="ts-now-btn" type="button">Now</button>
+        <button id="ts-parse-btn" class="primary" type="button">Parse</button>
+      </div>
+      <div id="ts-output" class="ts-output"></div>
+    </div>
+
+    <div class="stack-section" id="tools-diff">
+      <h3>Diff</h3>
+      <div class="form-row">
+        <button id="diff-btn" class="primary" type="button">Diff</button>
+        <button id="diff-clear-btn" type="button">Clear</button>
+        <label class="checkbox-label"><input id="diff-json" type="checkbox"> Auto JSON</label>
+      </div>
+      <div class="diff-cols">
+        <div class="diff-col">
+          <div class="section-label">A</div>
+          <textarea id="diff-a" rows="8" spellcheck="false" placeholder="Paste text A…"></textarea>
+        </div>
+        <div class="diff-col">
+          <div class="section-label">B</div>
+          <textarea id="diff-b" rows="8" spellcheck="false" placeholder="Paste text B…"></textarea>
+        </div>
+      </div>
+      <div id="diff-stats" class="diff-stats hidden"></div>
+      <div id="diff-output" class="diff-output"></div>
+    </div>
   </div>
 
   <!-- ═══ PAYLOADS ════════════════════════════════════════════════════════ -->
@@ -356,6 +598,15 @@
       <button id="payload-search-clear">Clear</button>
     </div>
     <div id="payload-output"></div>
+    <div class="stack-section payload-custom-editor">
+      <h3>Custom Payload Group</h3>
+      <div class="form-row">
+        <input id="payload-custom-name" placeholder="Group name" autocomplete="off">
+        <button id="payload-custom-save" class="primary" type="button">Save Group</button>
+      </div>
+      <textarea id="payload-custom-values" rows="5" placeholder="One payload per line" spellcheck="false"></textarea>
+      <div id="payload-custom-list" class="payload-custom-list"></div>
+    </div>
   </div>
 
   </main>
@@ -384,10 +635,10 @@
       <label>Expires<input id="ck-expires" type="datetime-local"></label>
       <label>SameSite
         <select id="ck-samesite">
+          <option value="unspecified">Unspecified</option>
           <option value="no_restriction">None</option>
           <option value="lax">Lax</option>
           <option value="strict">Strict</option>
-          <option value="unspecified">Unspecified</option>
         </select>
       </label>
       <label class="checkbox-label"><input id="ck-httponly" type="checkbox"> HttpOnly</label>
@@ -401,9 +652,16 @@
 </div>
 
 <div id="ctx-menu" class="ctx-menu hidden">
-  <div id="ctx-send-encode" class="ctx-item">› Send to Encode / Decode</div>
-  <div id="ctx-send-jwt" class="ctx-item">› Send to JWT tab</div>
-  <div id="ctx-copy-urlencoded" class="ctx-item">› Copy as URL encoded</div>
+  <div id="ctx-send-encode" class="ctx-item">Send to Encode / Decode</div>
+  <div id="ctx-send-jwt" class="ctx-item">Send to JWT tab</div>
+  <div id="ctx-copy-urlencoded" class="ctx-item">Copy as URL encoded</div>
+</div>
+<div id="find-bar" class="hidden" role="search" aria-label="Find in page">
+  <input id="find-bar-input" placeholder="Find…" autocomplete="off" spellcheck="false" aria-label="Search term">
+  <span id="find-count" aria-live="polite"></span>
+  <button id="find-bar-prev" class="sm" type="button" title="Previous (Shift+Enter)">&#8593;</button>
+  <button id="find-bar-next" class="sm" type="button" title="Next (Enter)">&#8595;</button>
+  <button id="find-bar-close" class="sm" type="button" title="Close (Esc)">&#10005;</button>
 </div>
 <div id="toast-container"></div>
 <script src="panel.js"></script>

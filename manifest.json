@@ -13,7 +13,8 @@
     "declarativeNetRequest",
     "declarativeNetRequestFeedback",
     "proxy",
-    "contextMenus"
+    "contextMenus",
+    "sidePanel"
   ],
   "host_permissions": ["<all_urls>"],
   "icons": {
@@ -23,12 +24,14 @@
     "128": "icons/icon-128.png"
   },
   "action": {
-    "default_popup": "panel/panel.html",
     "default_title": "Spectre",
     "default_icon": {
       "16": "icons/icon-16.png",
       "32": "icons/icon-32.png"
     }
+  },
+  "side_panel": {
+    "default_path": "panel/panel.html"
   },
   "background": {
     "service_worker": "background/service_worker.js"

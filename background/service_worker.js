@@ -60,10 +60,29 @@ const UA_MENU_PRESETS = [
   },
 ];
 
+const RULE_AUTH    = 1;
+const RULE_UA      = 2;
+const RULE_HEADERS = 3;
+
 const ALL_RESOURCE_TYPES = [
   'main_frame','sub_frame','stylesheet','script','image',
   'font','object','xmlhttprequest','ping','media','websocket','other',
 ];
+
+// ── Action button opens Spectre as Chrome's resizable side panel ─────────────
+
+function ignorePromise(p) {
+  p?.catch?.(() => {});
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  ignorePromise(chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true }));
+});
+
+chrome.action.onClicked.addListener(tab => {
+  if (!chrome.sidePanel?.open) return;
+  ignorePromise(chrome.sidePanel.open({ windowId: tab.windowId }));
+});
 
 // ── Build all context menus (proxy + roles + utils) ──────────────────────────
 
@@ -259,8 +278,10 @@ function applyProxyFromMenu(mode) {
 }
 
 function buildPacConfig(scheme, host, port, includes, excludes) {
-  const proxyStr = scheme === 'socks4' || scheme === 'socks5'
+  const proxyStr = scheme === 'socks5'
     ? `SOCKS5 ${host}:${port}; SOCKS ${host}:${port}`
+    : scheme === 'socks4'
+    ? `SOCKS ${host}:${port}`
     : `PROXY ${host}:${port}`;
 
   const conditions = [];
@@ -308,10 +329,10 @@ async function applyProxyProfileFromMenu(profileId) {
 async function applyUserAgentFromMenu(ua) {
   await new Promise(resolve => {
     chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [2],
+      removeRuleIds: [RULE_UA],
       addRules: [{
-        id: 2,
-        priority: 2,
+        id: RULE_UA,
+        priority: RULE_UA,
         action: {
           type: 'modifyHeaders',
           requestHeaders: [{ header: 'User-Agent', operation: 'set', value: ua }],
@@ -330,7 +351,7 @@ async function applyUserAgentFromMenu(ua) {
 
 async function clearUserAgentFromMenu() {
   await new Promise(resolve => {
-    chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [2] }, resolve);
+    chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RULE_UA] }, resolve);
   });
   await new Promise(resolve => {
     chrome.storage.local.remove('activeUA', () => resolve());
@@ -355,6 +376,102 @@ function removeCookiesNamedForUrl(pageUrl, cookieName) {
       }
     });
   });
+}
+
+function normalizeCookieSetDetails(cookie) {
+  const details = { ...(cookie || {}) };
+  Object.keys(details).forEach(k => {
+    if (details[k] == null) delete details[k];
+  });
+  if (details.sameSite === 'unspecified') delete details.sameSite;
+  if (!details.domain) delete details.domain;
+  if (!details.path) details.path = '/';
+  return details;
+}
+
+function cookieUrlForDetails(cookie) {
+  const scheme = cookie.secure ? 'https' : 'http';
+  const host = String(cookie.domain || '').replace(/^\./, '');
+  const path = cookie.path || '/';
+  return `${scheme}://${host}${path.startsWith('/') ? path : '/' + path}`;
+}
+
+function removalDetailsForCookie(cookie) {
+  const details = {
+    url: cookieUrlForDetails(cookie),
+    name: cookie.name,
+  };
+  if (cookie.storeId) details.storeId = cookie.storeId;
+  if (cookie.partitionKey) details.partitionKey = cookie.partitionKey;
+  return details;
+}
+
+function expirationDetailsForCookie(cookie) {
+  const details = {
+    url: cookieUrlForDetails(cookie),
+    name: cookie.name,
+    value: '',
+    path: cookie.path || '/',
+    secure: !!cookie.secure,
+    expirationDate: Math.floor(Date.now() / 1000) - 86400,
+  };
+  if (cookie.httpOnly) details.httpOnly = true;
+  if (cookie.sameSite && cookie.sameSite !== 'unspecified') details.sameSite = cookie.sameSite;
+  if (cookie.storeId) details.storeId = cookie.storeId;
+  if (cookie.partitionKey) details.partitionKey = cookie.partitionKey;
+  if (!cookie.hostOnly) details.domain = cookie.domain;
+  return normalizeCookieSetDetails(details);
+}
+
+function setCookieWithFallback(cookie, sendResponse) {
+  const details = normalizeCookieSetDetails(cookie);
+  chrome.cookies.set(details, c => {
+    const err = chrome.runtime.lastError;
+    if (!err || !details.partitionKey) {
+      sendResponse({ cookie: c, error: err ? cookieSetErrorMessage(err) : null });
+      return;
+    }
+    const retry = { ...details };
+    delete retry.partitionKey;
+    chrome.cookies.set(retry, retryCookie => {
+      sendResponse({
+        cookie: retryCookie,
+        error: chrome.runtime.lastError ? cookieSetErrorMessage(chrome.runtime.lastError) : null,
+      });
+    });
+  });
+}
+
+function removeCookieWithFallback(cookie, sendResponse) {
+  const expire = expirationDetailsForCookie(cookie);
+  chrome.cookies.set(expire, expiredCookie => {
+    const expireErr = chrome.runtime.lastError;
+    if (!expireErr) {
+      sendResponse({ ok: true, removed: expiredCookie, error: null });
+      return;
+    }
+    const remove = removalDetailsForCookie(cookie);
+    chrome.cookies.remove(remove, removed => {
+      const removeErr = chrome.runtime.lastError;
+      if (!removeErr || !remove.partitionKey) {
+        sendResponse({ ok: !!removed, removed, error: removeErr ? cookieSetErrorMessage(removeErr) : null });
+        return;
+      }
+      const retry = { ...remove };
+      delete retry.partitionKey;
+      chrome.cookies.remove(retry, retryRemoved => {
+        sendResponse({
+          ok: !!retryRemoved,
+          removed: retryRemoved,
+          error: chrome.runtime.lastError ? cookieSetErrorMessage(chrome.runtime.lastError) : null,
+        });
+      });
+    });
+  });
+}
+
+function cookieSetErrorMessage(error) {
+  return error?.message || String(error || 'Failed to set cookie');
 }
 
 // ── Role helper (apply from context menu) ────────────────────────────────────
@@ -394,10 +511,10 @@ async function applyRoleFromMenu(roleId, tab) {
 
     await new Promise(res => {
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [1],
+        removeRuleIds: [RULE_AUTH],
         addRules: [{
-          id: 1,
-          priority: 1,
+          id: RULE_AUTH,
+          priority: RULE_AUTH,
           action: {
             type: 'modifyHeaders',
             requestHeaders: [
@@ -464,7 +581,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   // Header profile eject
   if (info.menuItemId === 'hdr-eject') {
-    await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [3] }, res); });
+    await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RULE_HEADERS] }, res); });
     await new Promise(res => { chrome.storage.local.remove('activeHeaderProfileId', res); });
     await buildAllMenus();
     return;
@@ -484,10 +601,10 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
         if (domain) {
           await new Promise(res => {
             chrome.declarativeNetRequest.updateSessionRules({
-              removeRuleIds: [3],
+              removeRuleIds: [RULE_HEADERS],
               addRules: [{
-                id: 3,
-                priority: 3,
+                id: RULE_HEADERS,
+                priority: RULE_HEADERS,
                 action: {
                   type: 'modifyHeaders',
                   requestHeaders: profile.headers.flatMap(h => [
@@ -509,7 +626,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 
   // Role eject
   if (info.menuItemId === 'role-eject') {
-    await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [1] }, res); });
+    await new Promise(res => { chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RULE_AUTH] }, res); });
     await new Promise(res => { chrome.storage.local.remove('activeRoleId', res); });
     await buildAllMenus();
     return;
@@ -544,15 +661,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   switch (msg.type) {
 
     case 'GET_COOKIES':
-      chrome.cookies.getAll({ url: msg.url }, cookies =>
-        sendResponse({ cookies: cookies || [] })
-      );
+      try {
+        chrome.cookies.getAll({ url: msg.url }, cookies =>
+          sendResponse({ cookies: cookies || [], error: chrome.runtime.lastError ? cookieSetErrorMessage(chrome.runtime.lastError) : null })
+        );
+      } catch (e) {
+        sendResponse({ cookies: [], error: cookieSetErrorMessage(e) });
+      }
       return true;
 
     case 'SET_COOKIE':
-      chrome.cookies.set(msg.cookie, cookie =>
-        sendResponse({ cookie, error: chrome.runtime.lastError || null })
-      );
+      try {
+        setCookieWithFallback(msg.cookie, sendResponse);
+      } catch (e) {
+        sendResponse({ error: cookieSetErrorMessage(e) });
+      }
       return true;
 
     case 'REPLACE_NAMED_COOKIE': {
@@ -562,9 +685,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           if (forUrl && (forUrl.startsWith('http://') || forUrl.startsWith('https://')) && name) {
             await removeCookiesNamedForUrl(forUrl, name);
           }
-          chrome.cookies.set(cookie, c => {
-            sendResponse({ cookie: c, error: chrome.runtime.lastError || null });
-          });
+          setCookieWithFallback(cookie, sendResponse);
         } catch (e) {
           sendResponse({ error: e?.message || String(e) });
         }
@@ -578,14 +699,22 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       );
       return true;
 
+    case 'REMOVE_COOKIE_EXACT':
+      try {
+        removeCookieWithFallback(msg.cookie, sendResponse);
+      } catch (e) {
+        sendResponse({ error: cookieSetErrorMessage(e) });
+      }
+      return true;
+
     case 'FETCH': {
-      const { url, method = 'GET', headers = {}, body } = msg;
+      const { url, method = 'GET', headers = {}, body, maxBody = 2000 } = msg;
       if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
         sendResponse({ error: 'Only http/https URLs supported' });
         return;
       }
       const opts = { method, headers };
-      if (body && method !== 'GET' && method !== 'HEAD') opts.body = body;
+      if (body != null && method !== 'GET' && method !== 'HEAD') opts.body = body;
       fetch(url, opts)
         .then(async r => {
           const text = await r.text();
@@ -593,7 +722,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             status: r.status,
             statusText: r.statusText,
             headers: Object.fromEntries(r.headers.entries()),
-            body: text.substring(0, 2000),
+            body: text.substring(0, Math.max(0, maxBody)),
             length: text.length,
           });
         })
@@ -604,10 +733,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     case 'INJECT_AUTH': {
       const { headerName, token, domain } = msg;
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [1],
+        removeRuleIds: [RULE_AUTH],
         addRules: [{
-          id: 1,
-          priority: 1,
+          id: RULE_AUTH,
+          priority: RULE_AUTH,
           action: {
             type: 'modifyHeaders',
             requestHeaders: [
@@ -629,17 +758,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     case 'EJECT_AUTH': {
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [1],
+        removeRuleIds: [RULE_AUTH],
       }, () => sendResponse({ ok: true }));
       return true;
     }
 
     case 'SET_UA': {
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [2],
+        removeRuleIds: [RULE_UA],
         addRules: [{
-          id: 2,
-          priority: 2,
+          id: RULE_UA,
+          priority: RULE_UA,
           action: {
             type: 'modifyHeaders',
             requestHeaders: [{ header: 'User-Agent', operation: 'set', value: msg.ua }],
@@ -658,7 +787,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
     case 'CLEAR_UA': {
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [2],
+        removeRuleIds: [RULE_UA],
       }, () => {
         buildAllMenus().then(() => sendResponse({ ok: true }));
       });
@@ -669,10 +798,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const { headers, domain } = msg;
       if (!headers?.length || !domain) { sendResponse({ ok: false, error: 'headers and domain required' }); return; }
       chrome.declarativeNetRequest.updateSessionRules({
-        removeRuleIds: [3],
+        removeRuleIds: [RULE_HEADERS],
         addRules: [{
-          id: 3,
-          priority: 3,
+          id: RULE_HEADERS,
+          priority: RULE_HEADERS,
           action: {
             type: 'modifyHeaders',
             requestHeaders: headers.flatMap(h => [
@@ -693,7 +822,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     }
 
     case 'EJECT_HEADERS': {
-      chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [3] }, () => {
+      chrome.declarativeNetRequest.updateSessionRules({ removeRuleIds: [RULE_HEADERS] }, () => {
         sendResponse({ ok: true });
       });
       return true;
