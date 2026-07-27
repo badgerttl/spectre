@@ -528,6 +528,59 @@ input:disabled { opacity: .5; }
   color: var(--accent);
 }
 
+.app-dialog {
+  width: min(390px, calc(100vw - 28px));
+  max-width: none;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 65%);
+}
+.app-dialog::backdrop {
+  background: rgb(4 8 12 / 72%);
+  backdrop-filter: blur(3px);
+}
+.dialog-card { padding: 18px; }
+.dialog-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.dialog-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  place-items: center;
+  border: 1px solid rgb(255 107 121 / 65%);
+  border-radius: 50%;
+  background: rgb(96 24 35 / 45%);
+  color: var(--danger);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 18px;
+  font-weight: 800;
+}
+.dialog-message {
+  margin-top: 16px;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.dialog-detail {
+  margin-top: 10px;
+  padding: 9px 10px;
+  border-left: 2px solid var(--warning);
+  border-radius: 0 5px 5px 0;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+.dialog-actions { justify-content: flex-end; margin-top: 18px; }
+
 .toast {
   position: fixed;
   z-index: 20;

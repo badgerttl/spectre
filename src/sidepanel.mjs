@@ -9,6 +9,8 @@ import {
   identifyHash,
   isJwt,
   normaliseEpoch,
+  normaliseDomainScope,
+  normaliseProxyEndpoint,
   prettyPrintValue,
   serialisePrettyValue,
   signJwtHmac,
@@ -134,6 +136,7 @@ function bindEvents() {
     await refreshState();
   });
   $("#refresh-cookies").addEventListener("click", refreshCookies);
+  $("#clear-cookies").addEventListener("click", clearCookies);
   $("#new-cookie").addEventListener("click", () => openCookieEditor());
   $("#close-cookie-editor").addEventListener("click", closeCookieEditor);
   $("#cookie-filter").addEventListener("input", renderCookies);
@@ -223,6 +226,7 @@ function bindEvents() {
   $("#new-role").addEventListener("click", () => openRoleEditor());
   $("#close-role-editor").addEventListener("click", closeRoleEditor);
   $("#role-type").addEventListener("change", syncRoleFields);
+  $("#role-scope").addEventListener("change", syncRoleFields);
   $("#role-form").addEventListener("submit", saveRole);
   $("#delete-role").addEventListener("click", deleteRole);
 
@@ -472,7 +476,11 @@ function renderPosture() {
   roleValue.textContent = role?.name ?? "None";
   roleItem.classList.toggle("live", Boolean(role));
   roleItem.title = role
-    ? `${role.name} is active on ${extensionState.activeRole.origin}`
+    ? `${role.name} is active for ${roleScopeDescription(
+        extensionState.activeRole.scope ?? role.scope ?? "origin",
+        extensionState.activeRole.origin,
+        extensionState.activeRole.scopeDomain ?? role.scopeDomain
+      )}`
     : "No role is active. Open role settings.";
 
   const proxy = extensionState.proxyConfig;
@@ -631,12 +639,45 @@ async function saveCookie(event) {
 }
 
 async function deleteCookie() {
-  if (!editingCookie || !confirm(`Delete cookie "${editingCookie.name}"?`)) return;
+  if (!editingCookie) return;
+  const confirmed = await confirmAction({
+    title: "Delete cookie?",
+    message: `Delete “${editingCookie.name}” from ${getActiveOrigin()}?`,
+    detail: "This can invalidate the current application session.",
+    confirmLabel: "Delete cookie"
+  });
+  if (!confirmed) return;
   try {
     await send("removeCookie", { url: activeTab.url, cookie: editingCookie });
     closeCookieEditor();
     await refreshCookies();
     showToast("Cookie deleted.");
+  } catch (error) {
+    showError(error);
+  }
+}
+
+async function clearCookies() {
+  const origin = getActiveOrigin();
+  if (!origin) return showToast("Select an HTTP or HTTPS target tab first.", true);
+  if (!cookies.length) return showToast("There are no cookies to clear for this target.");
+  const count = cookies.length;
+  const confirmed = await confirmAction({
+    title: `Clear ${count} cookie${count === 1 ? "" : "s"}?`,
+    message: `Remove all cookies currently applicable to ${origin}?`,
+    detail: "This can sign you out, reset application state, and remove an active cookie-based role.",
+    confirmLabel: "Clear cookies"
+  });
+  if (!confirmed) return;
+  try {
+    const result = await send("clearCookies", { url: activeTab.url });
+    closeCookieEditor();
+    await refreshCookies();
+    if (result.failed) {
+      showToast(`${result.removed} cleared; ${result.failed} could not be removed.`, true);
+    } else {
+      showToast(`${result.removed} cookie${result.removed === 1 ? "" : "s"} cleared.`);
+    }
   } catch (error) {
     showError(error);
   }
@@ -715,6 +756,13 @@ async function saveStorageItem(event) {
 async function deleteStorageItem() {
   const key = $("#storage-key").value;
   if (!key) return showToast("Enter or select a storage key.", true);
+  const confirmed = await confirmAction({
+    title: "Delete storage item?",
+    message: `Delete “${key}” from ${storageArea}?`,
+    detail: `The change applies to ${getActiveOrigin() || "the active target"}.`,
+    confirmLabel: "Delete item"
+  });
+  if (!confirmed) return;
   try {
     storageItems = await send("removeWebStorageItem", { tabId: activeTab?.id, area: storageArea, key });
     $("#storage-key").value = "";
@@ -727,7 +775,15 @@ async function deleteStorageItem() {
 }
 
 async function clearStorage() {
-  if (!confirm(`Clear all ${storageArea} items for ${getActiveOrigin()}?`)) return;
+  const itemCount = Object.keys(storageItems).length;
+  if (!itemCount) return showToast(`${storageArea} is already empty.`);
+  const confirmed = await confirmAction({
+    title: `Clear ${storageArea}?`,
+    message: `Remove all ${itemCount} item${itemCount === 1 ? "" : "s"} from ${storageArea}?`,
+    detail: `The change applies to ${getActiveOrigin() || "the active target"} and cannot be undone.`,
+    confirmLabel: "Clear storage"
+  });
+  if (!confirmed) return;
   try {
     storageItems = await send("clearWebStorage", { tabId: activeTab?.id, area: storageArea });
     $("#storage-key").value = "";
@@ -1351,7 +1407,16 @@ async function saveUserAgent(event) {
 async function deleteUserAgent() {
   const config = extensionState.networkConfig;
   const profile = config.userAgentProfiles.find(({ id }) => id === editingUserAgentId);
-  if (!profile || !confirm(`Delete User-Agent "${profile.name}"?`)) return;
+  if (!profile) return;
+  const confirmed = await confirmAction({
+    title: "Delete User-Agent?",
+    message: `Delete the “${profile.name}” User-Agent profile?`,
+    detail: config.activeUserAgentId === profile.id
+      ? "This profile is active and will be disabled."
+      : "",
+    confirmLabel: "Delete profile"
+  });
+  if (!confirmed) return;
   config.userAgentProfiles = config.userAgentProfiles.filter(({ id }) => id !== profile.id);
   if (config.activeUserAgentId === profile.id) config.activeUserAgentId = null;
   if (await persistNetworkConfig("User-Agent profile deleted.")) closeUserAgentEditor();
@@ -1469,7 +1534,14 @@ async function saveHeader(event) {
 async function deleteHeader() {
   const config = extensionState.networkConfig;
   const header = config.headers.find(({ id }) => id === editingHeaderId);
-  if (!header || !confirm(`Delete header "${header.name}"?`)) return;
+  if (!header) return;
+  const confirmed = await confirmAction({
+    title: "Delete custom header?",
+    message: `Delete the “${header.name}” header?`,
+    detail: header.enabled ? "This header is active and will stop being sent." : "",
+    confirmLabel: "Delete header"
+  });
+  if (!confirmed) return;
   config.headers = config.headers.filter(({ id }) => id !== header.id);
   if (await persistNetworkConfig("Custom header deleted.")) closeHeaderEditor();
 }
@@ -1578,20 +1650,21 @@ function closeProxyEditor() {
 
 async function saveProxy(event) {
   event.preventDefault();
-  const profile = {
-    id: editingProxyId ?? crypto.randomUUID(),
-    name: $("#proxy-name").value.trim(),
-    scheme: $("#proxy-scheme").value,
-    host: $("#proxy-host").value.trim(),
-    port: Number($("#proxy-port").value),
-    username: $("#proxy-username").value,
-    password: $("#proxy-password").value,
-    bypassList: $("#proxy-bypass").value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
-  };
-  const profiles = editingProxyId
-    ? extensionState.proxyProfiles.map((item) => (item.id === editingProxyId ? profile : item))
-    : [...extensionState.proxyProfiles, profile];
   try {
+    const endpoint = normaliseProxyEndpoint($("#proxy-host").value, $("#proxy-port").value);
+    const profile = {
+      id: editingProxyId ?? crypto.randomUUID(),
+      name: $("#proxy-name").value.trim(),
+      scheme: endpoint.scheme ?? $("#proxy-scheme").value,
+      host: endpoint.host,
+      port: endpoint.port,
+      username: $("#proxy-username").value,
+      password: $("#proxy-password").value,
+      bypassList: $("#proxy-bypass").value.split(/\r?\n|,/).map((item) => item.trim()).filter(Boolean)
+    };
+    const profiles = editingProxyId
+      ? extensionState.proxyProfiles.map((item) => (item.id === editingProxyId ? profile : item))
+      : [...extensionState.proxyProfiles, profile];
     await send("saveProxyProfiles", { profiles });
     closeProxyEditor();
     await refreshState();
@@ -1603,7 +1676,16 @@ async function saveProxy(event) {
 
 async function deleteProxy() {
   const profile = extensionState.proxyProfiles.find(({ id }) => id === editingProxyId);
-  if (!profile || !confirm(`Delete proxy "${profile.name}"?`)) return;
+  if (!profile) return;
+  const confirmed = await confirmAction({
+    title: "Delete proxy?",
+    message: `Delete the “${profile.name}” proxy profile?`,
+    detail: extensionState.activeProxyId === profile.id
+      ? "This proxy is active. Direct connection mode will be restored."
+      : "",
+    confirmLabel: "Delete proxy"
+  });
+  if (!confirmed) return;
   try {
     if (extensionState.activeProxyId === profile.id) await send("deactivateProxy");
     await send("saveProxyProfiles", {
@@ -1619,10 +1701,12 @@ async function deleteProxy() {
 
 async function toggleProxy(proxyId, enabled) {
   try {
-    if (enabled) await send("activateProxy", { proxyId });
-    else await send("deactivateProxy");
+    const applied = enabled ? await send("activateProxy", { proxyId }) : null;
+    if (!enabled) await send("deactivateProxy");
     await refreshState();
-    showToast(enabled ? "Proxy enabled for the regular browser profile." : "Proxy disabled; direct mode restored.");
+    showToast(enabled
+      ? `${applied.scheme.toUpperCase()} proxy active at ${applied.host}:${applied.port}.`
+      : "Proxy disabled; direct mode restored.");
   } catch (error) {
     await refreshState().catch(() => {});
     showError(error);
@@ -1648,7 +1732,7 @@ function renderRoles() {
     key.textContent = role.name;
     const meta = document.createElement("span");
     meta.className = "record-meta";
-    meta.textContent = role.type;
+    meta.textContent = `${role.type} · ${roleScopeLabel(role.scope ?? "origin")}`;
     summary.append(key, meta);
 
     const controls = document.createElement("div");
@@ -1680,6 +1764,8 @@ function openRoleEditor(role = null) {
   $("#role-form-title").textContent = role ? "Edit role" : "New role";
   $("#role-name").value = role?.name ?? "";
   $("#role-type").value = role?.type ?? "bearer";
+  $("#role-scope").value = role?.scope ?? (role ? "origin" : "domain");
+  $("#role-scope-domain").value = role?.scopeDomain ?? "";
   $("#role-token").value = role?.token ?? "";
   $("#role-cookie-name").value = role?.cookieName ?? "";
   $("#role-cookie-value").value = role?.cookieValue ?? "";
@@ -1704,27 +1790,38 @@ function syncRoleFields() {
   $$(".role-fields").forEach((fields) =>
     fields.classList.toggle("hidden", fields.id !== `role-${selected}-fields`)
   );
+  const scope = $("#role-scope");
+  const allSitesOption = scope.querySelector('option[value="all"]');
+  allSitesOption.disabled = selected === "cookie";
+  if (selected === "cookie" && scope.value === "all") scope.value = "domain";
+  $("#role-domain-fields").classList.toggle("hidden", scope.value !== "domain");
+  $("#role-scope-hint").textContent = roleScopeHint(scope.value, selected);
 }
 
 async function saveRole(event) {
   event.preventDefault();
-  const role = {
-    id: editingRoleId ?? crypto.randomUUID(),
-    name: $("#role-name").value.trim(),
-    type: $("#role-type").value,
-    token: $("#role-token").value.trim(),
-    cookieName: $("#role-cookie-name").value.trim(),
-    cookieValue: $("#role-cookie-value").value,
-    cookiePath: $("#role-cookie-path").value.trim() || "/",
-    username: $("#role-username").value,
-    password: $("#role-password").value,
-    headerName: $("#role-header-name").value.trim(),
-    headerValue: $("#role-header-value").value
-  };
-  const roles = editingRoleId
-    ? extensionState.roles.map((item) => (item.id === editingRoleId ? role : item))
-    : [...extensionState.roles, role];
   try {
+    const scope = $("#role-scope").value;
+    const role = {
+      id: editingRoleId ?? crypto.randomUUID(),
+      name: $("#role-name").value.trim(),
+      type: $("#role-type").value,
+      scope,
+      scopeDomain: scope === "domain"
+        ? normaliseDomainScope($("#role-scope-domain").value)
+        : "",
+      token: $("#role-token").value.trim(),
+      cookieName: $("#role-cookie-name").value.trim(),
+      cookieValue: $("#role-cookie-value").value,
+      cookiePath: $("#role-cookie-path").value.trim() || "/",
+      username: $("#role-username").value,
+      password: $("#role-password").value,
+      headerName: $("#role-header-name").value.trim(),
+      headerValue: $("#role-header-value").value
+    };
+    const roles = editingRoleId
+      ? extensionState.roles.map((item) => (item.id === editingRoleId ? role : item))
+      : [...extensionState.roles, role];
     extensionState.roles = await send("saveRoles", { roles });
     closeRoleEditor();
     renderRoles();
@@ -1736,7 +1833,16 @@ async function saveRole(event) {
 
 async function deleteRole() {
   const role = extensionState.roles.find(({ id }) => id === editingRoleId);
-  if (!role || !confirm(`Delete role "${role.name}"?`)) return;
+  if (!role) return;
+  const confirmed = await confirmAction({
+    title: "Delete role?",
+    message: `Delete the “${role.name}” role?`,
+    detail: extensionState.activeRole?.roleId === role.id
+      ? "This role is active and will be deactivated first."
+      : "",
+    confirmLabel: "Delete role"
+  });
+  if (!confirmed) return;
   try {
     if (extensionState.activeRole?.roleId === role.id) await send("deactivateRole");
     extensionState.roles = await send("saveRoles", {
@@ -1764,13 +1870,61 @@ async function activateRole(roleId) {
     return;
   }
   try {
-    await send("activateRole", { roleId, origin });
+    const role = extensionState.roles.find(({ id }) => id === roleId);
+    if (role?.scope === "all") {
+      const confirmed = await confirmAction({
+        title: "Activate role on all sites?",
+        message: `Apply “${role.name}” to every HTTP(S) request?`,
+        detail: "Authorization or custom-header credentials may be sent to unrelated third-party destinations.",
+        confirmLabel: "Activate globally"
+      });
+      if (!confirmed) {
+        renderRoles();
+        return;
+      }
+    }
+    const activated = await send("activateRole", { roleId, origin });
     await refreshState();
-    showToast("Role activated. Reload the target page.");
+    showToast(`Role active for ${roleScopeDescription(
+      activated.scope,
+      activated.origin,
+      activated.scopeDomain
+    )}. Reload the target page.`);
   } catch (error) {
     await refreshState().catch(() => {});
     showError(error);
   }
+}
+
+function roleScopeLabel(scope) {
+  return {
+    origin: "exact origin",
+    domain: "domain",
+    all: "all sites"
+  }[scope] ?? "exact origin";
+}
+
+function roleScopeDescription(scope, origin, scopeDomain = "") {
+  if (scope === "all") return "all HTTP(S) sites";
+  if (scope === "domain") {
+    const domain = scopeDomain || new URL(origin).hostname;
+    return `${domain} and subdomains`;
+  }
+  return origin;
+}
+
+function roleScopeHint(scope, roleType) {
+  if (scope === "all") {
+    return "High exposure: this credential will be attached to every HTTP(S) destination.";
+  }
+  if (scope === "domain") {
+    return roleType === "cookie"
+      ? "Creates a domain cookie for the configured domain and its subdomains."
+      : "Matches the configured domain and all of its subdomains across HTTP, HTTPS, and ports.";
+  }
+  return roleType === "cookie"
+    ? "Cookies cannot be port-scoped; this uses a host-only cookie where possible."
+    : "Matches only the activation scheme, hostname, and port.";
 }
 
 async function deactivateRole() {
@@ -1873,6 +2027,29 @@ async function copyText(value, successMessage) {
   } catch (error) {
     showError(error);
   }
+}
+
+function confirmAction({
+  title = "Confirm action?",
+  message,
+  detail = "",
+  confirmLabel = "Confirm"
+}) {
+  const dialog = $("#confirm-dialog");
+  $("#confirm-dialog-title").textContent = title;
+  $("#confirm-dialog-message").textContent = message;
+  $("#confirm-dialog-detail").textContent = detail;
+  $("#confirm-dialog-detail").classList.toggle("hidden", !detail);
+  $("#confirm-dialog-accept").textContent = confirmLabel;
+  dialog.returnValue = "";
+
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => {
+      resolve(dialog.returnValue === "confirm");
+    }, { once: true });
+    dialog.showModal();
+    $("#confirm-dialog-cancel").focus();
+  });
 }
 
 function showToast(message, isError = false) {

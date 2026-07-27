@@ -92,6 +92,72 @@ export function urlDecodeValue(value) {
   return decodeURIComponent(value.replace(/\+/g, " "));
 }
 
+export function normaliseProxyEndpoint(hostValue, portValue) {
+  const input = String(hostValue ?? "").trim();
+  if (!input) throw new Error("Proxy host is required.");
+
+  let host = input;
+  let port = Number(portValue);
+  let scheme = null;
+  const hasScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(input);
+  const hasInlinePort = /^[^:/\s]+:\d+$/.test(input) ||
+    /^\[[0-9a-f:]+\](?::\d+)?$/i.test(input);
+
+  if (hasScheme || hasInlinePort) {
+    let endpoint;
+    try {
+      endpoint = new URL(hasScheme ? input : `http://${input}`);
+    } catch {
+      throw new Error("Enter a valid proxy hostname, IP address, or URL.");
+    }
+    if (endpoint.username || endpoint.password) {
+      throw new Error("Enter proxy credentials in the Username and Password fields.");
+    }
+    if (endpoint.pathname !== "/" || endpoint.search || endpoint.hash) {
+      throw new Error("A proxy endpoint cannot contain a path, query, or fragment.");
+    }
+    host = endpoint.hostname;
+    if (endpoint.port) port = Number(endpoint.port);
+    if (hasScheme) scheme = endpoint.protocol.slice(0, -1).toLowerCase();
+  }
+
+  if (!host || /[\s/?#@]/.test(host)) {
+    throw new Error("Proxy host must be a hostname or IP address.");
+  }
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Proxy port must be between 1 and 65535.");
+  }
+
+  return { host, port, scheme };
+}
+
+export function normaliseDomainScope(value) {
+  const input = String(value ?? "").trim().replace(/^\*\./, "").replace(/^\./, "");
+  if (!input) return "";
+  if (input.includes("://")) {
+    throw new Error("Enter a domain only, without http:// or https://.");
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(`http://${input}`);
+  } catch {
+    throw new Error("Enter a valid role scope domain.");
+  }
+  if (
+    !parsed.hostname ||
+    parsed.port ||
+    parsed.username ||
+    parsed.password ||
+    parsed.pathname !== "/" ||
+    parsed.search ||
+    parsed.hash
+  ) {
+    throw new Error("Role scope must be a domain without a port, path, query, or credentials.");
+  }
+  return parsed.hostname.toLowerCase();
+}
+
 export function prettyPrintValue(value) {
   const input = String(value ?? "");
   const jsonCandidates = [{ label: "JSON", codec: "json", value: input }];

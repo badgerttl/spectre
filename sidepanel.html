@@ -68,6 +68,7 @@
             <h2>Cookies</h2>
           </div>
           <div class="actions compact">
+            <button id="clear-cookies" class="button danger">Clear all</button>
             <button id="refresh-cookies" class="button secondary">Refresh</button>
             <button id="new-cookie" class="button">New</button>
           </div>
@@ -349,7 +350,8 @@
             </label>
             <label>Port<input id="proxy-port" type="number" min="1" max="65535" value="8080"></label>
           </div>
-          <label>Host<input id="proxy-host" value="127.0.0.1"></label>
+          <label>Host or proxy URL<input id="proxy-host" value="127.0.0.1" placeholder="127.0.0.1 or http://127.0.0.1:8080"></label>
+          <p class="hint">A pasted proxy URL overrides the Scheme and Port fields.</p>
           <div class="field-grid two">
             <label>Username<input id="proxy-username" autocomplete="off"></label>
             <label>Password<input id="proxy-password" type="password" autocomplete="off"></label>
@@ -384,6 +386,18 @@
               <option value="custom">Custom header</option>
             </select>
           </label>
+          <label>Request scope
+            <select id="role-scope">
+              <option value="origin">Exact origin</option>
+              <option value="domain">Domain + subdomains</option>
+              <option value="all">All HTTP(S) sites</option>
+            </select>
+          </label>
+          <div id="role-domain-fields" class="role-scope-fields hidden">
+            <label>Scope domain<input id="role-scope-domain" placeholder="example.com"></label>
+            <p class="hint">Leave blank to use the active target host when this role is enabled.</p>
+          </div>
+          <p id="role-scope-hint" class="hint warning"></p>
           <div id="role-bearer-fields" class="role-fields">
             <label>Bearer token<textarea id="role-token" rows="4" spellcheck="false"></textarea></label>
           </div>
@@ -405,7 +419,7 @@
             <button type="button" id="delete-role" class="button danger">Delete</button>
           </div>
         </form>
-        <p class="hint warning">Role secrets are stored in this browser profile. Activation is restricted to the current origin and cleared at browser restart.</p>
+        <p class="hint warning">Role secrets are stored in this browser profile and activation is cleared at browser restart. Use all-sites scope only when the credential is intended for every HTTP(S) destination.</p>
       </section>
 
       <section id="panel-payloads" class="panel">
@@ -434,6 +448,23 @@
       <button type="button" role="menuitem" data-selection-tool="url" data-selection-operation="decode">URL Decode</button>
       <button id="selection-jwt-workbench" class="hidden" type="button" role="menuitem" data-selection-tool="jwt" data-selection-operation="analyse">Send to JWT Workbench</button>
     </div>
+    <dialog id="confirm-dialog" class="app-dialog" aria-labelledby="confirm-dialog-title" aria-describedby="confirm-dialog-message">
+      <form method="dialog" class="dialog-card">
+        <div class="dialog-heading">
+          <span id="confirm-dialog-icon" class="dialog-icon" aria-hidden="true">!</span>
+          <div>
+            <p class="eyebrow">Confirm action</p>
+            <h2 id="confirm-dialog-title">Continue?</h2>
+          </div>
+        </div>
+        <p id="confirm-dialog-message" class="dialog-message"></p>
+        <p id="confirm-dialog-detail" class="dialog-detail hidden"></p>
+        <div class="actions dialog-actions">
+          <button id="confirm-dialog-cancel" type="submit" value="cancel" class="button secondary">Cancel</button>
+          <button id="confirm-dialog-accept" type="submit" value="confirm" class="button danger">Confirm</button>
+        </div>
+      </form>
+    </dialog>
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script type="module" src="src/sidepanel.mjs"></script>
   </body>

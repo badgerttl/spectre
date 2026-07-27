@@ -17,7 +17,9 @@ const {
   extractJwt,
   identifyHash,
   isJwt,
+  normaliseDomainScope,
   normaliseEpoch,
+  normaliseProxyEndpoint,
   originRegex,
   prettyPrintValue,
   serialisePrettyValue,
@@ -59,6 +61,33 @@ test("URL helpers scope rules to an exact origin", () => {
   assert.equal(pattern.test("https://example.test/path"), false);
   assert.equal(urlEncodePayload("<script>alert(1)</script>"), "%3Cscript%3Ealert(1)%3C%2Fscript%3E");
   assert.equal(urlDecodeValue("hello+world%21"), "hello world!");
+});
+
+test("proxy endpoints accept hosts, host:port pairs, and complete URLs", () => {
+  assert.deepEqual(
+    normaliseProxyEndpoint("127.0.0.1", "8080"),
+    { host: "127.0.0.1", port: 8080, scheme: null }
+  );
+  assert.deepEqual(
+    normaliseProxyEndpoint("localhost:8081", 8080),
+    { host: "localhost", port: 8081, scheme: null }
+  );
+  assert.deepEqual(
+    normaliseProxyEndpoint("http://127.0.0.1:8082", 8080),
+    { host: "127.0.0.1", port: 8082, scheme: "http" }
+  );
+  assert.throws(
+    () => normaliseProxyEndpoint("http://127.0.0.1:8080/proxy", 8080),
+    /cannot contain a path/i
+  );
+});
+
+test("role scope domains are normalised and reject URL components", () => {
+  assert.equal(normaliseDomainScope("*.Example.TEST"), "example.test");
+  assert.equal(normaliseDomainScope(".api.example.test"), "api.example.test");
+  assert.equal(normaliseDomainScope(""), "");
+  assert.throws(() => normaliseDomainScope("https://example.test"), /domain only/i);
+  assert.throws(() => normaliseDomainScope("example.test:8443"), /without a port/i);
 });
 
 test("structured values are pretty printed without changing their source", () => {

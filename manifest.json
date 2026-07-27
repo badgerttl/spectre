@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Spectre Security Toolkit",
-  "version": "0.13.0",
+  "version": "0.15.0",
   "description": "A scoped browser-side toolkit for authorised web application security testing.",
   "minimum_chrome_version": "116",
   "permissions": [

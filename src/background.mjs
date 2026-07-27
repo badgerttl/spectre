@@ -1,4 +1,9 @@
-import { encodeBasicAuth, originRegex } from "./utils.mjs";
+import {
+  encodeBasicAuth,
+  normaliseDomainScope,
+  normaliseProxyEndpoint,
+  originRegex
+} from "./utils.mjs";
 
 const NETWORK_RULE_ID = 1001;
 const ROLE_RULE_ID = 1002;
@@ -67,7 +72,7 @@ chrome.runtime.onInstalled.addListener(async () => {
       : { ...legacyProxy, enabled: false },
     proxyProfiles,
     activeProxyId,
-    roles: current.roles ?? []
+    roles: normaliseRoles(current.roles ?? [])
   });
   await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
   await queueContextMenuBuild();
@@ -335,6 +340,8 @@ async function handleMessage(message) {
       return saveCookie(message.url, message.cookie, message.original);
     case "removeCookie":
       return removeCookie(message.url, message.cookie);
+    case "clearCookies":
+      return clearCookies(message.url);
     case "getWebStorage":
       return executeStorageAction(message.tabId, message.area, "get");
     case "setWebStorageItem":
@@ -349,17 +356,18 @@ async function handleMessage(message) {
       await syncNetworkRules();
       return message.config;
     case "saveRoles": {
-      validateRoles(message.roles);
-      await chrome.storage.local.set({ roles: message.roles });
+      const roles = normaliseRoles(message.roles);
+      validateRoles(roles);
+      await chrome.storage.local.set({ roles });
       const { activeRole } = await chrome.storage.session.get("activeRole");
-      if (activeRole && message.roles.some(({ id }) => id === activeRole.roleId)) {
+      if (activeRole && roles.some(({ id }) => id === activeRole.roleId)) {
         await activateRole(activeRole.roleId, activeRole.origin);
       } else if (activeRole) {
         await deactivateRole();
       } else {
         await syncNetworkRules();
       }
-      return message.roles;
+      return roles;
     }
     case "activateRole":
       return activateRole(message.roleId, message.origin);
@@ -403,7 +411,7 @@ async function getState() {
     proxyConfig: { ...DEFAULT_PROXY_CONFIG, ...(local.proxyConfig ?? {}) },
     proxyProfiles: local.proxyProfiles ?? [],
     activeProxyId: local.activeProxyId ?? null,
-    roles: local.roles ?? [],
+    roles: normaliseRoles(local.roles ?? []),
     activeRole: session.activeRole ?? null
   };
 }
@@ -472,6 +480,22 @@ async function removeCookie(tabUrl, cookie) {
   if (cookie.storeId) details.storeId = cookie.storeId;
   if (cookie.partitionKey) details.partitionKey = cookie.partitionKey;
   return chrome.cookies.remove(details);
+}
+
+async function clearCookies(tabUrl) {
+  const url = requireHttpUrl(tabUrl);
+  const targetCookies = await chrome.cookies.getAll({ url });
+  const results = await Promise.allSettled(
+    targetCookies.map((cookie) => removeCookie(url, cookie))
+  );
+  const removed = results.filter(
+    (result) => result.status === "fulfilled" && Boolean(result.value)
+  ).length;
+  return {
+    requested: targetCookies.length,
+    removed,
+    failed: targetCookies.length - removed
+  };
 }
 
 async function executeStorageAction(tabId, area, operation, key, value) {
@@ -631,6 +655,15 @@ function validateRoles(roles) {
     if (!["bearer", "basic", "cookie", "custom"].includes(role.type)) {
       throw new Error(`Unsupported authentication type for ${role.name}.`);
     }
+    if (!["origin", "domain", "all"].includes(role.scope)) {
+      throw new Error(`Unsupported request scope for ${role.name}.`);
+    }
+    if (role.scope === "domain" && role.scopeDomain) {
+      normaliseDomainScope(role.scopeDomain);
+    }
+    if (role.type === "cookie" && role.scope === "all") {
+      throw new Error(`Cookie role ${role.name} cannot use an all-sites scope.`);
+    }
     if (role.type === "custom") validateHeader(role.headerName, role.headerValue ?? "");
     if (role.type === "cookie" && (!role.cookieName || /[\r\n;]/.test(role.cookieName))) {
       throw new Error(`Invalid cookie name for ${role.name}.`);
@@ -638,10 +671,27 @@ function validateRoles(roles) {
   }
 }
 
-function ruleCondition(scope, origin) {
-  return {
-    regexFilter: scope === "all" ? "^https?://" : originRegex(origin)
-  };
+function normaliseRoles(roles) {
+  if (!Array.isArray(roles)) return roles;
+  return roles.map((role) => ({
+    ...role,
+    scope: role.scope ?? "origin",
+    scopeDomain: role.scope === "domain"
+      ? normaliseDomainScope(role.scopeDomain)
+      : ""
+  }));
+}
+
+function ruleCondition(scope, origin, scopeDomain = "") {
+  if (scope === "all") return { regexFilter: "^https?://" };
+  if (scope === "domain") {
+    const domain = normaliseDomainScope(scopeDomain) || new URL(origin).hostname;
+    return {
+      regexFilter: "^https?://",
+      requestDomains: [domain]
+    };
+  }
+  return { regexFilter: originRegex(origin) };
 }
 
 async function syncNetworkRules() {
@@ -688,7 +738,11 @@ async function syncNetworkRules() {
         type: "modifyHeaders",
         requestHeaders: [{ header: header.name.toLowerCase(), operation: "set", value: header.value }]
       },
-      condition: ruleCondition("origin", activeRole.origin)
+      condition: ruleCondition(
+        role.scope ?? "origin",
+        activeRole.origin,
+        activeRole.scopeDomain ?? role.scopeDomain
+      )
     });
   }
 
@@ -718,15 +772,33 @@ async function activateRole(roleId, origin) {
   const { roles = [] } = await chrome.storage.local.get("roles");
   const role = roles.find(({ id }) => id === roleId);
   if (!role) throw new Error("The selected role no longer exists.");
+  const scope = role.scope ?? "origin";
+  const scopeDomain = scope === "domain"
+    ? normaliseDomainScope(role.scopeDomain) || new URL(targetOrigin).hostname
+    : "";
+  if (role.type === "cookie" && scope === "all") {
+    throw new Error("Cookie roles cannot be applied to all sites.");
+  }
 
   await restoreRoleCookie();
-  await chrome.storage.session.set({
-    activeRole: { roleId, origin: targetOrigin, activatedAt: Date.now() }
-  });
-
-  if (role.type === "cookie") await applyRoleCookie(role, targetOrigin);
-  await syncNetworkRules();
-  return { roleId, origin: targetOrigin, activatedAt: Date.now() };
+  const activeRole = {
+    roleId,
+    origin: targetOrigin,
+    scope,
+    scopeDomain,
+    activatedAt: Date.now()
+  };
+  try {
+    if (role.type === "cookie") await applyRoleCookie(role, targetOrigin, scope, scopeDomain);
+    await chrome.storage.session.set({ activeRole });
+    await syncNetworkRules();
+    return activeRole;
+  } catch (error) {
+    await restoreRoleCookie().catch(() => {});
+    await chrome.storage.session.remove("activeRole");
+    await syncNetworkRules().catch(() => {});
+    throw error;
+  }
 }
 
 async function deactivateRole() {
@@ -735,8 +807,16 @@ async function deactivateRole() {
   await syncNetworkRules();
 }
 
-async function applyRoleCookie(role, origin) {
+async function applyRoleCookie(role, origin, scope, scopeDomain) {
   const url = `${origin}/`;
+  const activationHost = new URL(origin).hostname;
+  if (
+    scope === "domain" &&
+    activationHost !== scopeDomain &&
+    !activationHost.endsWith(`.${scopeDomain}`)
+  ) {
+    throw new Error(`Cannot set a ${scopeDomain} cookie from ${activationHost}.`);
+  }
   const existing = await chrome.cookies.get({ url, name: role.cookieName });
   await chrome.storage.local.set({
     roleCookieBackup: {
@@ -755,13 +835,19 @@ async function applyRoleCookie(role, origin) {
     httpOnly: existing?.httpOnly ?? false,
     sameSite: existing?.sameSite ?? "unspecified"
   };
-  if (existing?.domain) details.domain = existing.domain;
+  if (scope === "domain") details.domain = scopeDomain;
+  else if (existing?.domain && !existing.hostOnly) details.domain = existing.domain;
   if (existing?.storeId) details.storeId = existing.storeId;
   if (existing?.partitionKey) details.partitionKey = existing.partitionKey;
   if (!existing?.session && existing?.expirationDate) {
     details.expirationDate = existing.expirationDate;
   }
-  await chrome.cookies.set(details);
+  const applied = await chrome.cookies.set(details);
+  if (!applied) throw new Error("Chrome rejected the role cookie.");
+  const { roleCookieBackup } = await chrome.storage.local.get("roleCookieBackup");
+  await chrome.storage.local.set({
+    roleCookieBackup: { ...roleCookieBackup, applied }
+  });
 }
 
 async function restoreRoleCookie() {
@@ -779,29 +865,30 @@ async function restoreRoleCookie() {
       httpOnly: cookie.httpOnly,
       sameSite: cookie.sameSite
     };
-    if (cookie.domain) details.domain = cookie.domain;
+    if (cookie.domain && !cookie.hostOnly) details.domain = cookie.domain;
     if (!cookie.session && cookie.expirationDate) details.expirationDate = cookie.expirationDate;
     if (cookie.storeId) details.storeId = cookie.storeId;
     if (cookie.partitionKey) details.partitionKey = cookie.partitionKey;
     await chrome.cookies.set(details);
   } else {
-    await chrome.cookies.remove({
-      url: roleCookieBackup.url,
+    const applied = roleCookieBackup.applied;
+    const details = {
+      url: applied ? cookieUrl(applied, roleCookieBackup.url) : roleCookieBackup.url,
       name: roleCookieBackup.name
-    });
+    };
+    if (applied?.storeId) details.storeId = applied.storeId;
+    if (applied?.partitionKey) details.partitionKey = applied.partitionKey;
+    await chrome.cookies.remove(details);
   }
   await chrome.storage.local.remove("roleCookieBackup");
 }
 
 function validateProxyConfig(config) {
   if (!config) throw new Error("Proxy configuration is missing.");
-  if (!["http", "https", "socks4", "socks5"].includes(config.scheme)) {
+  const endpoint = normaliseProxyEndpoint(config.host, config.port);
+  const scheme = endpoint.scheme ?? config.scheme;
+  if (!["http", "https", "socks4", "socks5"].includes(scheme)) {
     throw new Error("Unsupported proxy scheme.");
-  }
-  if (config.enabled && !config.host?.trim()) throw new Error("Proxy host is required.");
-  const port = Number(config.port);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("Proxy port must be between 1 and 65535.");
   }
 }
 
@@ -820,12 +907,13 @@ function validateProxyProfiles(profiles) {
 }
 
 function proxyProfileFromConfig(config, id, name) {
+  const endpoint = normaliseProxyEndpoint(config.host, config.port);
   return {
     id,
     name,
-    scheme: config.scheme,
-    host: config.host,
-    port: Number(config.port),
+    scheme: endpoint.scheme ?? config.scheme,
+    host: endpoint.host,
+    port: endpoint.port,
     username: config.username ?? "",
     password: config.password ?? "",
     bypassList: config.bypassList ?? []
@@ -834,11 +922,12 @@ function proxyProfileFromConfig(config, id, name) {
 
 function profileToProxyConfig(profile) {
   if (!profile) return { ...DEFAULT_PROXY_CONFIG, enabled: false };
+  const endpoint = normaliseProxyEndpoint(profile.host, profile.port);
   return {
     enabled: true,
-    scheme: profile.scheme,
-    host: profile.host,
-    port: Number(profile.port),
+    scheme: endpoint.scheme ?? profile.scheme,
+    host: endpoint.host,
+    port: endpoint.port,
     username: profile.username ?? "",
     password: profile.password ?? "",
     bypassList: profile.bypassList ?? []
@@ -846,15 +935,24 @@ function profileToProxyConfig(profile) {
 }
 
 async function saveProxyProfiles(profiles) {
-  validateProxyProfiles(profiles);
+  const normalisedProfiles = profiles.map((profile) => {
+    const endpoint = normaliseProxyEndpoint(profile.host, profile.port);
+    return {
+      ...profile,
+      scheme: endpoint.scheme ?? profile.scheme,
+      host: endpoint.host,
+      port: endpoint.port
+    };
+  });
+  validateProxyProfiles(normalisedProfiles);
   const { activeProxyId = null } = await chrome.storage.local.get("activeProxyId");
-  await chrome.storage.local.set({ proxyProfiles: profiles });
-  if (activeProxyId && profiles.some(({ id }) => id === activeProxyId)) {
+  await chrome.storage.local.set({ proxyProfiles: normalisedProfiles });
+  if (activeProxyId && normalisedProfiles.some(({ id }) => id === activeProxyId)) {
     await activateProxy(activeProxyId);
   } else if (activeProxyId) {
     await deactivateProxy();
   }
-  return profiles;
+  return normalisedProfiles;
 }
 
 async function activateProxy(proxyId) {
@@ -863,9 +961,15 @@ async function activateProxy(proxyId) {
   if (!profile) throw new Error("The selected proxy profile no longer exists.");
   validateProxyProfiles(proxyProfiles);
   const proxyConfig = profileToProxyConfig(profile);
-  await applyProxy(proxyConfig);
+  const effective = await applyProxy(proxyConfig);
   await chrome.storage.local.set({ activeProxyId: proxyId, proxyConfig });
-  return { proxyId };
+  return {
+    proxyId,
+    scheme: proxyConfig.scheme,
+    host: proxyConfig.host,
+    port: proxyConfig.port,
+    effective
+  };
 }
 
 async function deactivateProxy() {
@@ -887,14 +991,16 @@ async function applyStoredProxy() {
 
 async function applyProxy(config) {
   validateProxyConfig(config);
+  const endpoint = normaliseProxyEndpoint(config.host, config.port);
+  const scheme = endpoint.scheme ?? config.scheme;
   const value = config.enabled
     ? {
         mode: "fixed_servers",
         rules: {
           singleProxy: {
-            scheme: config.scheme,
-            host: config.host.trim(),
-            port: Number(config.port)
+            scheme,
+            host: endpoint.host,
+            port: endpoint.port
           },
           bypassList: (config.bypassList ?? []).filter(Boolean)
         }
@@ -906,6 +1012,41 @@ async function applyProxy(config) {
       const error = chrome.runtime.lastError;
       if (error) reject(new Error(error.message));
       else resolve();
+    });
+  });
+
+  const effective = await getEffectiveProxySettings();
+  if (config.enabled) {
+    if (effective.levelOfControl !== "controlled_by_this_extension") {
+      throw new Error(`Chrome proxy settings are ${effective.levelOfControl.replaceAll("_", " ")}.`);
+    }
+    const rules = effective.value?.rules ?? {};
+    const servers = [
+      rules.singleProxy,
+      rules.proxyForHttp,
+      rules.proxyForHttps,
+      rules.fallbackProxy
+    ].filter(Boolean);
+    const matchesEndpoint = servers.some((server) =>
+      (server.scheme ?? "http") === scheme &&
+      server.host === endpoint.host &&
+      Number(server.port) === endpoint.port
+    );
+    if (effective.value?.mode !== "fixed_servers" || !matchesEndpoint) {
+      throw new Error(
+        `Chrome did not apply ${scheme.toUpperCase()} ${endpoint.host}:${endpoint.port} as the effective proxy.`
+      );
+    }
+  }
+  return effective;
+}
+
+async function getEffectiveProxySettings() {
+  return new Promise((resolve, reject) => {
+    chrome.proxy.settings.get({ incognito: false }, (settings) => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve(settings);
     });
   });
 }

@@ -74,6 +74,14 @@ test("manifest entry points exist and side-panel IDs are unique", async () => {
   assert.match(sidepanelScript, /Number\(isJwt\(b\.value\)\)\s*-\s*Number\(isJwt\(a\.value\)\)/);
   assert.match(css, /\.record-row\.jwt-record/);
   assert.match(css, /\.record-jwt-badge/);
+  assert.ok(ids.includes("clear-cookies"), "cookie clear action is missing");
+  assert.ok(ids.includes("confirm-dialog"), "in-app confirmation dialog is missing");
+  assert.ok(ids.includes("confirm-dialog-accept"), "confirmation action is missing");
+  assert.match(sidepanelScript, /function confirmAction\(/);
+  assert.match(sidepanelScript, /send\("clearCookies"/);
+  assert.match(backgroundScript, /case "clearCookies":/);
+  assert.doesNotMatch(sidepanelScript, /\bconfirm\s*\(/, "native confirmation prompts are not allowed");
+  assert.match(css, /\.app-dialog::backdrop/);
 
   const transformOrder = ["base64-input", "url-input", "hash-input", "epoch-input"]
     .map((id) => html.indexOf(`id="${id}"`));
@@ -120,6 +128,8 @@ test("manifest entry points exist and side-panel IDs are unique", async () => {
   assert.match(backgroundScript, /contexts:\s*\["action"\]/);
   assert.match(backgroundScript, /type:\s*"radio"/);
   assert.match(backgroundScript, /type:\s*"checkbox"/);
+  assert.match(backgroundScript, /chrome\.proxy\.settings\.get/);
+  assert.match(backgroundScript, /controlled_by_this_extension/);
 
   for (const id of ["proxy-list", "proxy-form", "new-proxy", "role-list", "role-form", "new-role"]) {
     assert.ok(ids.includes(id), `${id} is missing`);
@@ -139,6 +149,14 @@ test("manifest entry points exist and side-panel IDs are unique", async () => {
     assert.ok(ids.includes(id), `${id} is missing`);
   }
   assert.match(css, /\.switch input\s*\{[^}]*inset:\s*0;[^}]*width:\s*100%;[^}]*height:\s*100%/s);
+  for (const id of ["role-scope", "role-scope-domain", "role-scope-hint"]) {
+    assert.ok(ids.includes(id), `${id} role scope control is missing`);
+  }
+  for (const scope of ["origin", "domain", "all"]) {
+    assert.match(html, new RegExp(`<option value="${scope}">`));
+  }
+  assert.match(backgroundScript, /requestDomains:\s*\[domain\]/);
+  assert.match(sidepanelScript, /Activate role on all sites\?/);
 
   const literalSelectors = [...sidepanelScript.matchAll(/\$\("#([A-Za-z][\w:-]*)"\)/g)]
     .map((match) => match[1]);
