@@ -1,0 +1,15 @@
+{
+  "name": "spectre-security-toolkit",
+  "version": "0.13.0",
+  "description": "A Chrome side-panel toolkit for authorised web application security testing.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check src/background.mjs && node --check src/sidepanel.mjs && node --check src/utils.mjs && node --check src/payloads.mjs",
+    "validate": "npm run check && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

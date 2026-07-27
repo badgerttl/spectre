@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Spectre Security Toolkit</title>
+    <link rel="stylesheet" href="styles/sidepanel.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">S</span>
+        <div>
+          <h1>SPECTRE</h1>
+          <p>Security Toolkit</p>
+        </div>
+      </div>
+      <div class="header-tools">
+        <button id="surface-toggle" class="icon-button" title="Open Spectre in its own window" aria-label="Open Spectre in its own window">↗</button>
+        <label class="theme-picker" title="Colour scheme">
+          <span class="sr-only">Colour scheme</span>
+          <select id="theme-select" aria-label="Colour scheme">
+            <option value="spectre">Spectre</option>
+            <option value="cobalt">Cobalt</option>
+            <option value="violet">Violet</option>
+            <option value="ember">Ember</option>
+            <option value="light">Light</option>
+          </select>
+        </label>
+        <button id="refresh-context" class="icon-button" title="Refresh active tab" aria-label="Refresh active tab">↻</button>
+      </div>
+    </header>
+
+    <div class="target-bar">
+      <span class="status-dot" id="target-dot"></span>
+      <span id="target-origin">No HTTP target selected</span>
+    </div>
+
+    <div class="posture-bar" aria-label="Active security controls">
+      <button class="posture-item" data-panel-jump="roles" title="Open role settings">
+        <span>Role</span>
+        <strong id="status-role-value">None</strong>
+      </button>
+      <button class="posture-item" data-panel-jump="network" data-scroll-target="proxy-settings" title="Open proxy settings">
+        <span>Proxy</span>
+        <strong id="status-proxy-value">Direct</strong>
+      </button>
+      <button class="posture-item" data-panel-jump="network" title="Open request controls">
+        <span>Rules</span>
+        <strong id="status-network-value">Off</strong>
+      </button>
+    </div>
+
+    <nav class="primary-nav" aria-label="Toolkit sections">
+      <button class="nav-item active" data-panel="inspect">Inspect</button>
+      <button class="nav-item" data-panel="transform">Transform</button>
+      <button class="nav-item" data-panel="jwt">JWT</button>
+      <button class="nav-item" data-panel="network">Network</button>
+      <button class="nav-item" data-panel="roles">Roles</button>
+      <button class="nav-item" data-panel="payloads">Payloads</button>
+    </nav>
+
+    <main>
+      <section id="panel-inspect" class="panel active">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Application state</p>
+            <h2>Cookies</h2>
+          </div>
+          <div class="actions compact">
+            <button id="refresh-cookies" class="button secondary">Refresh</button>
+            <button id="new-cookie" class="button">New</button>
+          </div>
+        </div>
+        <label class="search-field">
+          <span class="sr-only">Filter cookies</span>
+          <input id="cookie-filter" type="search" placeholder="Filter cookies…">
+        </label>
+        <div id="cookie-list" class="record-list empty-state">Select an HTTP target tab.</div>
+
+        <form id="cookie-form" class="editor-card hidden">
+          <div class="editor-title">
+            <h3 id="cookie-form-title">Edit cookie</h3>
+            <button type="button" id="close-cookie-editor" class="icon-button" aria-label="Close cookie editor">×</button>
+          </div>
+          <div class="field-grid two">
+            <label>Name<input id="cookie-name" required></label>
+            <label>Domain<input id="cookie-domain"></label>
+          </div>
+          <div class="value-mode-toolbar">
+            <span id="cookie-value-format">Pretty · Plain text</span>
+            <div class="segmented mini" role="group" aria-label="Cookie value display mode">
+              <button type="button" id="cookie-mode-raw">Raw</button>
+              <button type="button" id="cookie-mode-pretty" class="active">Pretty</button>
+            </div>
+          </div>
+          <label>Value<textarea id="cookie-value" rows="7"></textarea></label>
+          <div class="field-grid two">
+            <label>Path<input id="cookie-path" value="/"></label>
+            <label>SameSite
+              <select id="cookie-samesite">
+                <option value="unspecified">Unspecified</option>
+                <option value="lax">Lax</option>
+                <option value="strict">Strict</option>
+                <option value="no_restriction">None</option>
+              </select>
+            </label>
+          </div>
+          <label>Expires<input id="cookie-expires" type="datetime-local"></label>
+          <div class="check-row">
+            <label><input id="cookie-session" type="checkbox"> Session</label>
+            <label><input id="cookie-secure" type="checkbox"> Secure</label>
+            <label><input id="cookie-httponly" type="checkbox"> HttpOnly</label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="button">Save cookie</button>
+            <button type="button" id="delete-cookie" class="button danger">Delete</button>
+          </div>
+        </form>
+
+        <div class="divider"></div>
+
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Origin storage</p>
+            <h2>Web Storage</h2>
+          </div>
+          <button id="refresh-storage" class="button secondary">Refresh</button>
+        </div>
+        <div class="segmented" role="group" aria-label="Storage area">
+          <button class="storage-tab active" data-area="localStorage">localStorage</button>
+          <button class="storage-tab" data-area="sessionStorage">sessionStorage</button>
+        </div>
+        <div id="storage-list" class="record-list empty-state">No items loaded.</div>
+        <form id="storage-form" class="editor-card">
+          <label>Key<input id="storage-key" required></label>
+          <div class="value-mode-toolbar">
+            <span id="storage-value-format">Pretty · Plain text</span>
+            <div class="segmented mini" role="group" aria-label="Web Storage value display mode">
+              <button type="button" id="storage-mode-raw">Raw</button>
+              <button type="button" id="storage-mode-pretty" class="active">Pretty</button>
+            </div>
+          </div>
+          <label>Value<textarea id="storage-value" rows="8"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="button">Set item</button>
+            <button type="button" id="delete-storage" class="button secondary">Delete key</button>
+            <button type="button" id="clear-storage" class="button danger ghost">Clear all</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="panel-transform" class="panel">
+        <div id="base64-tool" class="section-heading transform-anchor">
+          <div><p class="eyebrow">Text utility</p><h2>Base64</h2></div>
+        </div>
+        <label>Input<textarea id="base64-input" rows="5"></textarea></label>
+        <div class="actions">
+          <button id="base64-encode" class="button">Encode</button>
+          <button id="base64-decode" class="button secondary">Decode</button>
+          <button id="base64-swap" class="button secondary">Swap</button>
+          <button id="base64-clear" class="button secondary">Clear</button>
+        </div>
+        <label>Output<textarea id="base64-output" rows="5" readonly></textarea></label>
+        <button id="copy-base64-output" class="button secondary full">Copy output</button>
+
+        <div class="divider"></div>
+
+        <div id="url-tool" class="section-heading transform-anchor">
+          <div><p class="eyebrow">Text utility</p><h2>URL Encode / Decode</h2></div>
+        </div>
+        <label>Input<textarea id="url-input" rows="5"></textarea></label>
+        <div class="actions">
+          <button id="url-encode" class="button">Encode component</button>
+          <button id="url-decode" class="button secondary">Decode</button>
+          <button id="url-swap" class="button secondary">Swap</button>
+          <button id="url-clear" class="button secondary">Clear</button>
+        </div>
+        <label>Output<textarea id="url-output" rows="5" readonly></textarea></label>
+        <button id="copy-url-output" class="button secondary full">Copy output</button>
+        <p class="hint">Decode treats plus signs as spaces for form/query-string compatibility.</p>
+
+        <div class="divider"></div>
+
+        <div class="section-heading">
+          <div><p class="eyebrow">Fingerprint</p><h2>Hash Identifier</h2></div>
+        </div>
+        <label>Hashes, one per line<textarea id="hash-input" rows="6" placeholder="d41d8cd98f00b204e9800998ecf8427e"></textarea></label>
+        <button id="identify-hashes" class="button full">Identify</button>
+        <div id="hash-results" class="result-box empty-state">Results appear here.</div>
+
+        <div class="divider"></div>
+
+        <div class="section-heading">
+          <div><p class="eyebrow">Time utility</p><h2>Epoch Converter</h2></div>
+        </div>
+        <label>Epoch<input id="epoch-input" inputmode="numeric" placeholder="1704067200"></label>
+        <div class="field-grid two">
+          <label>Input unit
+            <select id="epoch-input-unit">
+              <option value="auto">Auto detect</option>
+              <option value="seconds">Seconds</option>
+              <option value="milliseconds">Milliseconds</option>
+            </select>
+          </label>
+          <button id="epoch-to-date" class="button aligned">To date</button>
+        </div>
+        <div id="epoch-results" class="result-box empty-state">ISO and local time appear here.</div>
+        <label>Date and time<input id="date-input" type="datetime-local" step="0.001"></label>
+        <div class="field-grid two">
+          <label>Output unit
+            <select id="epoch-output-unit">
+              <option value="seconds">Seconds</option>
+              <option value="milliseconds">Milliseconds</option>
+            </select>
+          </label>
+          <button id="date-to-epoch" class="button aligned">To epoch</button>
+        </div>
+        <label>Epoch result<input id="date-result" readonly></label>
+      </section>
+
+      <section id="panel-jwt" class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Token analysis</p><h2>JWT Workbench</h2></div>
+          <span id="jwt-status-badge" class="jwt-status-badge neutral">Not analysed</span>
+        </div>
+
+        <label>Encoded JWT
+          <textarea id="jwt-input" rows="5" spellcheck="false" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…"></textarea>
+        </label>
+        <div class="actions">
+          <button id="jwt-analyse" class="button">Analyse</button>
+          <button id="jwt-clear" class="button secondary">Clear</button>
+        </div>
+
+        <div id="jwt-analysis" class="jwt-analysis empty-state">Token details appear here.</div>
+
+        <div class="divider"></div>
+
+        <div class="section-heading">
+          <div><p class="eyebrow">Editable JSON</p><h2>Header & Claims</h2></div>
+        </div>
+        <label>Header
+          <textarea id="jwt-header" rows="7" spellcheck="false" placeholder="{&#10;  &quot;alg&quot;: &quot;HS256&quot;,&#10;  &quot;typ&quot;: &quot;JWT&quot;&#10;}"></textarea>
+        </label>
+        <label>Claims
+          <textarea id="jwt-claims" rows="10" spellcheck="false" placeholder="{&#10;  &quot;sub&quot;: &quot;1234567890&quot;&#10;}"></textarea>
+        </label>
+        <button id="jwt-rebuild-unsigned" class="button secondary full">Rebuild without signature</button>
+
+        <div class="divider"></div>
+
+        <div class="section-heading">
+          <div><p class="eyebrow">HMAC operations</p><h2>Verify or Sign</h2></div>
+          <span id="jwt-signature-status" class="jwt-status-badge neutral">Unverified</span>
+        </div>
+        <label>HMAC secret
+          <input id="jwt-secret" type="password" autocomplete="off" spellcheck="false">
+        </label>
+        <div class="actions">
+          <button id="jwt-verify" class="button secondary">Verify original</button>
+          <button id="jwt-sign" class="button">Sign edited token</button>
+        </div>
+        <p class="hint">Supports HS256, HS384, and HS512. The secret is kept only in this view and is never stored.</p>
+
+        <label>Result token
+          <textarea id="jwt-result" rows="5" readonly spellcheck="false"></textarea>
+        </label>
+        <div class="actions">
+          <button id="jwt-copy-result" class="button secondary">Copy result</button>
+          <button id="jwt-use-result" class="button secondary">Use as input</button>
+        </div>
+        <p class="hint warning">Editing claims invalidates the original signature. Only use generated tokens within an authorised test scope.</p>
+      </section>
+
+      <section id="panel-network" class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Request mutation</p><h2>Headers & User-Agents</h2></div>
+        </div>
+        <label>Scope
+          <select id="network-scope">
+            <option value="origin">Current origin only</option>
+            <option value="all">All HTTP(S) sites</option>
+          </select>
+        </label>
+        <p class="hint" id="network-scope-hint">Rules will be restricted to the current target origin.</p>
+
+        <div class="subheading profile-heading">
+          <h3>User-Agents</h3>
+          <button id="new-user-agent" class="button secondary small">New</button>
+        </div>
+        <div id="user-agent-list" class="record-list empty-state">No saved User-Agents.</div>
+        <form id="user-agent-form" class="editor-card hidden">
+          <div class="editor-title">
+            <h3 id="user-agent-form-title">New User-Agent</h3>
+            <button type="button" id="close-user-agent-editor" class="icon-button" aria-label="Close User-Agent editor">×</button>
+          </div>
+          <label>Profile name<input id="user-agent-name" required placeholder="Chrome — Windows"></label>
+          <label>Common User-Agents
+            <select id="ua-preset"></select>
+          </label>
+          <label>User-Agent value<textarea id="user-agent" rows="4" required placeholder="Mozilla/5.0 …"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="button">Save User-Agent</button>
+            <button type="button" id="delete-user-agent" class="button danger">Delete</button>
+          </div>
+        </form>
+
+        <div class="subheading profile-heading">
+          <h3>Custom headers</h3>
+          <button id="new-header" class="button secondary small">New</button>
+        </div>
+        <div id="header-list" class="record-list empty-state">No custom headers.</div>
+        <form id="header-form" class="editor-card hidden">
+          <div class="editor-title">
+            <h3 id="header-form-title">New header</h3>
+            <button type="button" id="close-header-editor" class="icon-button" aria-label="Close header editor">×</button>
+          </div>
+          <label>Header name<input id="header-name" required placeholder="X-Header"></label>
+          <label>Header value<textarea id="header-value" rows="4"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="button">Save header</button>
+            <button type="button" id="delete-header" class="button danger">Delete</button>
+          </div>
+        </form>
+        <p class="hint">Toggles apply request changes immediately. Reload the target page to create new requests.</p>
+
+        <div class="divider"></div>
+
+        <div id="proxy-settings" class="section-heading">
+          <div><p class="eyebrow">Browser traffic</p><h2>Proxies</h2></div>
+          <button id="new-proxy" class="button">New</button>
+        </div>
+        <div id="proxy-list" class="record-list empty-state">No saved proxies.</div>
+        <form id="proxy-form" class="editor-card hidden">
+          <div class="editor-title">
+            <h3 id="proxy-form-title">New proxy</h3>
+            <button type="button" id="close-proxy-editor" class="icon-button" aria-label="Close proxy editor">×</button>
+          </div>
+          <label>Profile name<input id="proxy-name" required placeholder="Burp Suite"></label>
+          <div class="field-grid two">
+            <label>Scheme
+              <select id="proxy-scheme">
+                <option value="http">HTTP</option>
+                <option value="https">HTTPS</option>
+                <option value="socks4">SOCKS4</option>
+                <option value="socks5">SOCKS5</option>
+              </select>
+            </label>
+            <label>Port<input id="proxy-port" type="number" min="1" max="65535" value="8080"></label>
+          </div>
+          <label>Host<input id="proxy-host" value="127.0.0.1"></label>
+          <div class="field-grid two">
+            <label>Username<input id="proxy-username" autocomplete="off"></label>
+            <label>Password<input id="proxy-password" type="password" autocomplete="off"></label>
+          </div>
+          <label>Bypass list<textarea id="proxy-bypass" rows="3" placeholder="localhost&#10;127.0.0.1&#10;&lt;local&gt;"></textarea></label>
+          <div class="actions">
+            <button type="submit" class="button">Save proxy</button>
+            <button type="button" id="delete-proxy" class="button danger">Delete</button>
+          </div>
+        </form>
+        <p class="hint warning">Only one proxy can be active. Proxy settings affect the entire regular browser profile.</p>
+      </section>
+
+      <section id="panel-roles" class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Identity switching</p><h2>Roles</h2></div>
+          <button id="new-role" class="button">New</button>
+        </div>
+        <div id="role-list" class="record-list empty-state">No saved roles.</div>
+
+        <form id="role-form" class="editor-card hidden">
+          <div class="editor-title">
+            <h3 id="role-form-title">New role</h3>
+            <button type="button" id="close-role-editor" class="icon-button" aria-label="Close role editor">×</button>
+          </div>
+          <label>Role name<input id="role-name" required placeholder="Administrator"></label>
+          <label>Authentication method
+            <select id="role-type">
+              <option value="bearer">Bearer token</option>
+              <option value="cookie">Cookie value</option>
+              <option value="basic">Basic authentication</option>
+              <option value="custom">Custom header</option>
+            </select>
+          </label>
+          <div id="role-bearer-fields" class="role-fields">
+            <label>Bearer token<textarea id="role-token" rows="4" spellcheck="false"></textarea></label>
+          </div>
+          <div id="role-cookie-fields" class="role-fields hidden">
+            <label>Cookie name<input id="role-cookie-name"></label>
+            <label>Cookie value<textarea id="role-cookie-value" rows="3"></textarea></label>
+            <label>Cookie path<input id="role-cookie-path" value="/"></label>
+          </div>
+          <div id="role-basic-fields" class="role-fields hidden">
+            <label>Username<input id="role-username" autocomplete="off"></label>
+            <label>Password<input id="role-password" type="password" autocomplete="off"></label>
+          </div>
+          <div id="role-custom-fields" class="role-fields hidden">
+            <label>Header name<input id="role-header-name" placeholder="X-Role"></label>
+            <label>Header value<textarea id="role-header-value" rows="3"></textarea></label>
+          </div>
+          <div class="actions">
+            <button type="submit" class="button">Save role</button>
+            <button type="button" id="delete-role" class="button danger">Delete</button>
+          </div>
+        </form>
+        <p class="hint warning">Role secrets are stored in this browser profile. Activation is restricted to the current origin and cleared at browser restart.</p>
+      </section>
+
+      <section id="panel-payloads" class="panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Testing library</p><h2>Payloads</h2></div>
+          <span id="payload-count" class="counter">0</span>
+        </div>
+        <label class="search-field">
+          <span class="sr-only">Search payloads</span>
+          <input id="payload-search" type="search" placeholder="Search payloads and notes…">
+        </label>
+        <div class="field-grid payload-filter-row">
+          <label>Category<select id="payload-category"></select></label>
+          <button id="copy-all-payloads" class="button aligned">Copy all raw</button>
+        </div>
+        <div id="payload-list" class="payload-list"></div>
+        <p class="hint">Non-destructive probes only. Validate impact and scope before use.</p>
+      </section>
+    </main>
+
+    <div id="selection-transform-menu" class="selection-menu hidden" role="menu" aria-label="Send selection to transform">
+      <p id="selection-transform-title">Send selection to</p>
+      <button type="button" role="menuitem" data-selection-tool="base64" data-selection-operation="encode">Base64 Encode</button>
+      <button type="button" role="menuitem" data-selection-tool="base64" data-selection-operation="decode">Base64 Decode</button>
+      <button type="button" role="menuitem" data-selection-tool="url" data-selection-operation="encode">URL Encode</button>
+      <button type="button" role="menuitem" data-selection-tool="url" data-selection-operation="decode">URL Decode</button>
+      <button id="selection-jwt-workbench" class="hidden" type="button" role="menuitem" data-selection-tool="jwt" data-selection-operation="analyse">Send to JWT Workbench</button>
+    </div>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="src/sidepanel.mjs"></script>
+  </body>
+</html>
