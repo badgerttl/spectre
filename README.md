@@ -104,7 +104,7 @@ files:
 
 ```sh
 npm run validate
-zip -r spectre-v0.15.0.zip manifest.json sidepanel.html src styles assets
+zip -r spectre-v0.15.2.zip manifest.json sidepanel.html src styles assets
 ```
 
 The repository intentionally has no licence yet. Add the licence appropriate to

@@ -17,6 +17,10 @@ test("manifest entry points exist and side-panel IDs are unique", async () => {
 
   assert.deepEqual(Object.keys(manifest.icons), ["16", "32", "48", "128"]);
   assert.deepEqual(Object.keys(manifest.action.default_icon), ["16", "32", "48"]);
+  assert.ok(
+    Object.values(manifest.action.default_icon).every((iconPath) => iconPath.includes("toolbar-")),
+    "toolbar action must use the compact icon set"
+  );
   const iconPaths = new Set([
     ...Object.values(manifest.icons),
     ...Object.values(manifest.action.default_icon)

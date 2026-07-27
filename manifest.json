@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Spectre Security Toolkit",
-  "version": "0.15.0",
+  "version": "0.15.2",
   "description": "A scoped browser-side toolkit for authorised web application security testing.",
   "minimum_chrome_version": "116",
   "permissions": [
@@ -33,9 +33,9 @@
   "action": {
     "default_title": "Open Spectre",
     "default_icon": {
-      "16": "assets/icons/icon-16.png",
-      "32": "assets/icons/icon-32.png",
-      "48": "assets/icons/icon-48.png"
+      "16": "assets/icons/toolbar-16.png",
+      "32": "assets/icons/toolbar-32.png",
+      "48": "assets/icons/toolbar-48.png"
     }
   },
   "side_panel": {
