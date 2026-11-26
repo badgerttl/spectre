@@ -332,6 +332,8 @@ async function handleTransformContextMenu(info, tab) {
 
 async function handleMessage(message) {
   switch (message?.action) {
+    case "emergencyReset":
+      return emergencyReset();
     case "getState":
       return getState();
     case "listCookies":
@@ -345,11 +347,11 @@ async function handleMessage(message) {
     case "getWebStorage":
       return executeStorageAction(message.tabId, message.area, "get");
     case "setWebStorageItem":
-      return executeStorageAction(message.tabId, message.area, "set", message.key, message.value);
+      return executeStorageAction(message.tabId, message.area, "set", message.key, message.value, message.expectedOrigin);
     case "removeWebStorageItem":
-      return executeStorageAction(message.tabId, message.area, "remove", message.key);
+      return executeStorageAction(message.tabId, message.area, "remove", message.key, undefined, message.expectedOrigin);
     case "clearWebStorage":
-      return executeStorageAction(message.tabId, message.area, "clear");
+      return executeStorageAction(message.tabId, message.area, "clear", undefined, undefined, message.expectedOrigin);
     case "saveNetworkConfig":
       validateNetworkConfig(message.config);
       await chrome.storage.local.set({ networkConfig: message.config });
@@ -389,6 +391,30 @@ async function handleMessage(message) {
     default:
       throw new Error("Unknown extension action.");
   }
+}
+
+async function emergencyReset() {
+  const errors = [];
+  const attempt = async (label, action) => {
+    try { await action(); } catch (error) { errors.push(`${label}: ${error.message}`); }
+  };
+  await attempt("Restore role cookie", restoreRoleCookie);
+  await attempt("Clear active role", () => chrome.storage.session.remove("activeRole"));
+  await attempt("Disable request profiles", async () => {
+    const { networkConfig = DEFAULT_NETWORK_CONFIG } = await chrome.storage.local.get("networkConfig");
+    await chrome.storage.local.set({ networkConfig: {
+      ...networkConfig, enabled: false, userAgentEnabled: false,
+      activeUserAgentId: null, userAgent: "",
+      headers: (networkConfig.headers ?? []).map((header) => ({ ...header, enabled: false }))
+    } });
+  });
+  await attempt("Remove request rules", () => chrome.declarativeNetRequest.updateDynamicRules({ removeRuleIds: OWNED_RULE_IDS }));
+  await attempt("Restore direct connection", async () => {
+    await deactivateProxy();
+    const effective = await getEffectiveProxySettings();
+    if (effective.value?.mode !== "direct") throw new Error("Chrome's effective connection is not direct. Check other proxy extensions or browser policy.");
+  });
+  return { errors };
 }
 
 async function getState() {
@@ -460,7 +486,7 @@ async function saveCookie(tabUrl, cookie, original) {
     sameSite: cookie.sameSite || "unspecified"
   };
 
-  if (cookie.domain) details.domain = cookie.domain;
+  if (cookie.domain && !cookie.hostOnly) details.domain = cookie.domain;
   if (!cookie.session && cookie.expirationDate) {
     details.expirationDate = Number(cookie.expirationDate);
   }
@@ -498,7 +524,7 @@ async function clearCookies(tabUrl) {
   };
 }
 
-async function executeStorageAction(tabId, area, operation, key, value) {
+async function executeStorageAction(tabId, area, operation, key, value, expectedOrigin) {
   if (!Number.isInteger(tabId)) throw new Error("No active tab is available.");
   if (!["localStorage", "sessionStorage"].includes(area)) {
     throw new Error("Invalid web storage area.");
@@ -507,7 +533,8 @@ async function executeStorageAction(tabId, area, operation, key, value) {
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: (storageArea, storageOperation, itemKey, itemValue) => {
+    func: (storageArea, storageOperation, itemKey, itemValue, origin) => {
+      if (origin && location.origin !== origin) throw new Error("The target navigated to another origin.");
       const storage = window[storageArea];
       if (storageOperation === "set") storage.setItem(itemKey, itemValue);
       if (storageOperation === "remove") storage.removeItem(itemKey);
@@ -519,7 +546,7 @@ async function executeStorageAction(tabId, area, operation, key, value) {
         }).sort(([a], [b]) => a.localeCompare(b))
       );
     },
-    args: [area, operation, key ?? null, value ?? null]
+    args: [area, operation, key ?? null, value ?? null, expectedOrigin ?? null]
   });
   return result;
 }

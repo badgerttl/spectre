@@ -53,12 +53,39 @@ to the target tab and scopes identity changes to the selected HTTP(S) origin.
 - Pop Spectre out of the browser side panel into a dedicated resizable window,
   then return it to the original browser window. The detached view continues to
   target the original window's active tab.
-- Choose from Spectre, Cobalt, Violet, Ember, and Light colour schemes.
+- Choose Compact, Standard, Large, or Extra large text. The choice is saved across sessions and shared by the side panel and detached window.
+- Choose from Spectre, Cobalt, Violet, Ember, Falcon, and Light colour schemes. Falcon uses a terminal palette with monospace text and square controls.
 - Confirm cookie, storage, profile, proxy, header, and role deletion through a
   Spectre-styled in-app dialog instead of a browser prompt.
 - Search and copy 210 non-destructive probes across 25 categories, including
   XSS, SQLi, SSTI, traversal/LFI, SSRF, command injection, API, authentication,
   parser, upload, header, and client-side testing.
+
+## Emergency reset
+
+**Emergency reset** restores the role cookie, clears the active role, disables
+custom headers and User-Agent changes, removes Spectre's request rules, and
+restores direct connection mode. Saved profiles remain available. The result
+lists any failed steps so you can resolve the problem and retry.
+
+## Target, undo, and favorites
+
+Spectre pins the selected target tab by default and displays its title and origin.
+If the pinned tab closes, Spectre asks you to select another target. Use **Use current tab** to select
+another target, or toggle **Pin target** off to follow active tabs. The pin preference
+is saved, and the target is retained for the browser session, including when
+switching between the side panel and detached window.
+
+**Undo last edit** restores the most recent cookie or Web Storage save, deletion,
+or clear performed in the open panel. Undo history stays in memory and is lost
+when the panel closes or reloads. It checks for newer record values before
+restoring, preserves unrelated changes, and refuses storage restoration if the
+target tab has moved to another origin. Undo restores stored values; it cannot
+reverse server-side effects such as a session being invalidated.
+
+Use **Favorite** on a payload to save it, then enable **Favorites only** to filter
+the library. Favorites are saved in this browser profile and work with search,
+category selection, and **Copy all raw**.
 
 ## Install
 

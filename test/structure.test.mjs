@@ -38,7 +38,7 @@ test("manifest entry points exist and side-panel IDs are unique", async () => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
   assert.equal(new Set(ids).size, ids.length, "side-panel element IDs must be unique");
 
-  for (const theme of ["spectre", "cobalt", "violet", "ember", "light"]) {
+  for (const theme of ["spectre", "cobalt", "violet", "ember", "falcon", "light"]) {
     assert.match(html, new RegExp(`value="${theme}"`));
     if (theme !== "spectre") assert.match(css, new RegExp(`data-theme="${theme}"`));
   }

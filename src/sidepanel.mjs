@@ -1,3 +1,5 @@
+import { enhanceDropdown } from "./dropdown.mjs";
+import { changedRecords, cookieKey, favoriteKey } from "./history.mjs";
 import {
   analyseJwt,
   base64ToText,
@@ -79,6 +81,11 @@ const USER_AGENT_PRESETS = [
 ];
 
 let activeTab = null;
+let pinEnabled = true;
+let pinnedTabId = null;
+let favorites = new Set();
+let undoEntry = null;
+let editBusy = false;
 let extensionState = {
   networkConfig: {},
   proxyConfig: {},
@@ -108,6 +115,16 @@ initialise().catch(showError);
 async function initialise() {
   await initialiseSurface();
   await initialiseTheme();
+  await initialiseTextSize();
+  $$(".appearance-tools select").forEach(enhanceDropdown);
+  new ResizeObserver(([entry]) => {
+    document.documentElement.style.setProperty("--posture-height", `${entry.target.getBoundingClientRect().height}px`);
+  }).observe($(".posture-bar"));
+  const preferences = await chrome.storage.local.get(["pinTargetEnabled", "payloadFavorites"]);
+  pinEnabled = preferences.pinTargetEnabled !== false;
+  favorites = new Set(preferences.payloadFavorites || []);
+  const pinned = await chrome.storage.session.get(`pinnedTarget:${dockWindowId}`);
+  pinnedTabId = pinned[`pinnedTarget:${dockWindowId}`] ?? null;
   populateUserAgentPresets();
   populatePayloadCategories();
   renderPayloads();
@@ -118,7 +135,24 @@ async function initialise() {
 }
 
 function bindEvents() {
+  $("#emergency-reset").addEventListener("click", resetSecurityControls);
+  $("#pin-target").addEventListener("change", async (event) => {
+    try {
+      const enabled = event.target.checked;
+      await chrome.storage.local.set({ pinTargetEnabled: enabled });
+      pinEnabled = enabled;
+      pinnedTabId = pinEnabled ? activeTab?.id : null;
+      await refreshContext();
+    } catch (error) {
+      $("#pin-target").checked = pinEnabled;
+      showError(error);
+    }
+  });
+  $("#use-current-tab").addEventListener("click", () => refreshContext(false, true).catch(showError));
+  $("#undo-edit").addEventListener("click", undoLastEdit);
+  $("#favorites-only").addEventListener("change", renderPayloads);
   $("#surface-toggle").addEventListener("click", toggleSurface);
+  $("#text-size-select").addEventListener("change", saveTextSize);
   $("#theme-select").addEventListener("change", saveTheme);
   $$("[data-panel-jump]").forEach((button) =>
     button.addEventListener("click", () => {
@@ -262,8 +296,11 @@ function bindEvents() {
   chrome.tabs.onActivated.addListener(({ windowId }) => {
     if (!POPUP_MODE || windowId === dockWindowId) refreshContext();
   });
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    if (tabId === pinnedTabId || tabId === activeTab?.id) refreshContext().catch(showError);
+  });
   chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-    if (tabId === activeTab?.id && changeInfo.url) refreshContext();
+    if ((tabId === activeTab?.id || tabId === pinnedTabId) && (changeInfo.url || changeInfo.title)) refreshContext().catch(showError);
   });
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName === "session" && changes.pendingTransform?.newValue) {
@@ -276,6 +313,13 @@ function bindEvents() {
     ) {
       dockWindowId = changes[SURFACE_SESSION_KEYS.dockWindowId].newValue;
       refreshContext().catch(showError);
+    }
+    if (areaName === "local" && changes.uiTextSize) {
+      applyTextSize(changes.uiTextSize.newValue);
+    }
+    if (areaName === "local" && changes.payloadFavorites) {
+      favorites = new Set(changes.payloadFavorites.newValue || []);
+      renderPayloads();
     }
     const localStateChanged = areaName === "local" &&
       ["networkConfig", "proxyConfig", "proxyProfiles", "activeProxyId", "roles"]
@@ -401,25 +445,118 @@ async function returnToSidePanel() {
 
 function showPanel(name) {
   if (!$$(".nav-item").some((button) => button.dataset.panel === name)) return;
-  $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.panel === name));
+  $$(".nav-item").forEach((button) => (button.classList.toggle("active", button.dataset.panel === name), button.setAttribute("aria-current", button.dataset.panel === name ? "page" : "false")));
   $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.id === `panel-${name}`));
   chrome.storage.session.set({ [SURFACE_SESSION_KEYS.activePanel]: name }).catch(() => {});
 }
 
+const COOKIE_EDITS = ["saveCookie", "removeCookie", "clearCookies"];
+const STORAGE_EDITS = ["setWebStorageItem", "removeWebStorageItem", "clearWebStorage"];
+
+async function snapshotEdit(kind, target) {
+  if (kind === "cookie") {
+    const values = await sendRaw("listCookies", { url: target.url });
+    return Object.fromEntries(values.map((cookie) => [cookieKey(cookie), cookie]));
+  }
+  const tab = await chrome.tabs.get(target.tabId);
+  if (new URL(tab.url).origin !== target.origin) throw new Error("The edited tab has navigated to another origin.");
+  return sendRaw("getWebStorage", target);
+}
+
+function renderUndo() {
+  $("#undo-edit").disabled = editBusy || !undoEntry;
+  $("#undo-description").textContent = undoEntry
+    ? `${undoEntry.label} · ${undoEntry.target.origin}` : "No edits to undo.";
+}
+
 async function send(action, payload = {}) {
+  const kind = COOKIE_EDITS.includes(action) ? "cookie" : STORAGE_EDITS.includes(action) ? "storage" : null;
+  if (!kind) return sendRaw(action, payload);
+  if (editBusy) throw new Error("Wait for the current edit to finish.");
+  editBusy = true;
+  renderUndo();
+  const target = { ...payload, origin: new URL(payload.url || activeTab.url).origin };
+  target.expectedOrigin = target.origin;
+  try {
+    const before = await snapshotEdit(kind, target);
+    const result = await sendRaw(action, target);
+    // The new edit supersedes the previous undo, even if the follow-up read fails.
+    undoEntry = null;
+    const after = await snapshotEdit(kind, target);
+    const changes = changedRecords(before, after);
+    if (changes.length) undoEntry = { kind, target, changes, label: {
+      saveCookie: "Cookie saved", removeCookie: "Cookie deleted", clearCookies: "Cookies cleared",
+      setWebStorageItem: "Storage item saved", removeWebStorageItem: "Storage item deleted",
+      clearWebStorage: "Storage cleared"
+    }[action] };
+    return result;
+  } finally { editBusy = false; renderUndo(); }
+}
+
+async function undoLastEdit() {
+  if (!undoEntry || editBusy) return;
+  const entry = undoEntry;
+  editBusy = true;
+  renderUndo();
+  try {
+    const current = await snapshotEdit(entry.kind, entry.target);
+    if (entry.changes.some(({ key, after }) => JSON.stringify(current[key]) !== JSON.stringify(after))) {
+      throw new Error("These records have changed since your edit. Undo was stopped to preserve the newer values.");
+    }
+    for (const change of [...entry.changes]) {
+      if (entry.kind === "cookie") {
+        if (change.before) await sendRaw("saveCookie", { url: entry.target.url, cookie: change.before });
+        else await sendRaw("removeCookie", { url: entry.target.url, cookie: change.after });
+      } else {
+        await sendRaw(change.before === undefined ? "removeWebStorageItem" : "setWebStorageItem", {
+          ...entry.target, key: change.key, value: change.before
+        });
+      }
+      // Retain only unfinished records if Chrome rejects a later restoration.
+      entry.changes.splice(entry.changes.indexOf(change), 1);
+    }
+    undoEntry = null;
+    closeCookieEditor();
+    await refreshContext();
+    showToast("Last edit undone.");
+  } catch (error) { showError(error); }
+  finally { editBusy = false; renderUndo(); }
+}
+
+async function sendRaw(action, payload = {}) {
   const response = await chrome.runtime.sendMessage({ action, ...payload });
   if (!response?.ok) throw new Error(response?.error || "The extension service worker did not respond.");
   return response.data;
 }
 
-async function refreshContext(withNotice = false) {
-  const query = POPUP_MODE && Number.isInteger(dockWindowId)
-    ? { active: true, windowId: dockWindowId }
-    : { active: true, lastFocusedWindow: true };
-  const [tab] = await chrome.tabs.query(query);
+async function refreshContext(withNotice = false, useCurrent = false) {
+  const previous = activeTab;
+  let tab;
+  if (pinEnabled && pinnedTabId != null && !useCurrent) {
+    try { tab = await chrome.tabs.get(pinnedTabId); }
+    catch { tab = null; }
+  }
+  if (!tab && (!pinEnabled || pinnedTabId == null || useCurrent)) {
+    const query = Number.isInteger(dockWindowId)
+      ? { active: true, windowId: dockWindowId }
+      : { active: true, lastFocusedWindow: true };
+    [tab] = await chrome.tabs.query(query);
+  }
   activeTab = tab ?? null;
+  if (previous && (previous.id !== activeTab?.id || previous.url !== activeTab?.url)) {
+    closeCookieEditor();
+    $("#storage-key").value = "";
+    loadValueEditor("storage", "");
+  }
+  pinnedTabId = pinEnabled ? activeTab?.id ?? pinnedTabId : null;
+  await chrome.storage.session.set({ [`pinnedTarget:${dockWindowId}`]: pinnedTabId });
+  $("#pin-target").checked = pinEnabled;
   const origin = getActiveOrigin();
-  $("#target-origin").textContent = origin || "No HTTP target selected";
+  const targetClosed = pinEnabled && pinnedTabId != null && !activeTab;
+  $("#target-title").textContent = targetClosed ? "Pinned target closed" : activeTab?.title || origin || "No target selected";
+  $("#target-title").title = activeTab?.title || "";
+  $("#target-origin").textContent = targetClosed ? "Choose Use current tab to select a new target." : origin || "No HTTP target selected";
+  $("#target-origin").title = activeTab?.url || "";
   $("#target-dot").classList.toggle("ready", Boolean(origin));
 
   if (origin) {
@@ -443,6 +580,23 @@ function getActiveOrigin() {
   }
 }
 
+async function resetSecurityControls() {
+  const button = $("#emergency-reset");
+  button.disabled = true;
+  $("#reset-result").textContent = "Resetting active controls…";
+  try {
+    const { errors } = await send("emergencyReset");
+    $("#reset-result").textContent = errors.length
+      ? `Reset incomplete. ${errors.join(" ")} Retry after resolving these errors.`
+      : "Reset complete. Role, headers and User-Agent are off. Connection is direct.";
+    await refreshState();
+    await refreshCookies();
+  } catch (error) {
+    $("#reset-result").textContent = `Reset failed: ${error.message}`;
+    showError(error);
+  } finally { button.disabled = false; }
+}
+
 async function refreshState() {
   extensionState = await send("getState");
   fillNetworkForm();
@@ -453,7 +607,7 @@ async function refreshState() {
 
 async function initialiseTheme() {
   const { uiTheme = "spectre" } = await chrome.storage.local.get("uiTheme");
-  const theme = ["spectre", "cobalt", "violet", "ember", "light"].includes(uiTheme)
+  const theme = ["spectre", "cobalt", "violet", "ember", "falcon", "light"].includes(uiTheme)
     ? uiTheme
     : "spectre";
   document.documentElement.dataset.theme = theme;
@@ -465,6 +619,30 @@ async function saveTheme() {
   document.documentElement.dataset.theme = uiTheme;
   await chrome.storage.local.set({ uiTheme });
   showToast(`${$("#theme-select").selectedOptions[0].textContent} colour scheme applied.`);
+}
+
+const TEXT_SIZES = ["compact", "standard", "large", "extra-large"];
+
+function applyTextSize(value) {
+  const size = TEXT_SIZES.includes(value) ? value : "standard";
+  document.documentElement.dataset.textSize = size;
+  $("#text-size-select").value = size;
+  $("#text-size-select").dispatchEvent?.(new Event("dropdown-sync"));
+}
+
+async function initialiseTextSize() {
+  const { uiTextSize } = await chrome.storage.local.get("uiTextSize");
+  applyTextSize(uiTextSize);
+}
+
+async function saveTextSize() {
+  const uiTextSize = $("#text-size-select").value;
+  applyTextSize(uiTextSize);
+  try {
+    await chrome.storage.local.set({ uiTextSize });
+  } catch (error) {
+    showError(error);
+  }
 }
 
 function renderPosture() {
@@ -780,7 +958,7 @@ async function clearStorage() {
   const confirmed = await confirmAction({
     title: `Clear ${storageArea}?`,
     message: `Remove all ${itemCount} item${itemCount === 1 ? "" : "s"} from ${storageArea}?`,
-    detail: `The change applies to ${getActiveOrigin() || "the active target"} and cannot be undone.`,
+    detail: `The change applies to ${getActiveOrigin() || "the active target"} and can be restored with Undo while this panel remains open.`,
     confirmLabel: "Clear storage"
   });
   if (!confirmed) return;
@@ -1357,6 +1535,7 @@ function renderUserAgents() {
     toggleLabel.title = active ? "Disable User-Agent" : "Enable User-Agent";
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
+    toggle.setAttribute("aria-label", `${toggleLabel.title}: ${key.textContent}`);
     toggle.checked = active;
     const slider = document.createElement("span");
     toggle.addEventListener("change", () => toggleUserAgent(profile.id, toggle.checked));
@@ -1485,6 +1664,7 @@ function renderHeaders() {
     toggleLabel.title = header.enabled ? "Disable header" : "Enable header";
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
+    toggle.setAttribute("aria-label", `${toggleLabel.title}: ${key.textContent}`);
     toggle.checked = Boolean(header.enabled);
     const slider = document.createElement("span");
     toggle.addEventListener("change", () => toggleHeader(header.id, toggle.checked));
@@ -1612,6 +1792,7 @@ function renderProxies() {
     toggleLabel.title = proxy.id === extensionState.activeProxyId ? "Disable proxy" : "Enable proxy";
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
+    toggle.setAttribute("aria-label", `${toggleLabel.title}: ${key.textContent}`);
     toggle.checked = proxy.id === extensionState.activeProxyId;
     const slider = document.createElement("span");
     toggle.addEventListener("change", () => toggleProxy(proxy.id, toggle.checked));
@@ -1742,6 +1923,7 @@ function renderRoles() {
     toggleLabel.title = isActive ? "Disable role" : "Enable role";
     const toggle = document.createElement("input");
     toggle.type = "checkbox";
+    toggle.setAttribute("aria-label", `${toggleLabel.title}: ${key.textContent}`);
     toggle.checked = isActive;
     const slider = document.createElement("span");
     toggle.addEventListener("change", () => toggleRole(role.id, toggle.checked));
@@ -1960,6 +2142,7 @@ function filteredPayloadGroups() {
     .map((group) => ({
       ...group,
       payloads: group.payloads.filter(({ value, note }) =>
+        (!$("#favorites-only").checked || favorites.has(favoriteKey(group.category, value))) &&
         `${group.category} ${value} ${note}`.toLowerCase().includes(query)
       )
     }))
@@ -2006,7 +2189,24 @@ function renderPayloads() {
       encoded.className = "payload-action";
       encoded.textContent = "Copy URL";
       encoded.addEventListener("click", () => copyText(urlEncodePayload(payload.value), "URL-encoded payload copied."));
-      footer.append(note, raw, encoded);
+      const favorite = document.createElement("button");
+      const id = favoriteKey(group.category, payload.value);
+      favorite.type = "button";
+      favorite.className = "payload-action";
+      favorite.textContent = favorites.has(id) ? "★ Saved" : "☆ Favorite";
+      favorite.setAttribute("aria-pressed", String(favorites.has(id)));
+      favorite.setAttribute("aria-label", `Favorite payload: ${payload.note || payload.value}`);
+      favorite.addEventListener("click", async () => {
+        favorite.disabled = true;
+        const next = new Set(favorites);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        try {
+          await chrome.storage.local.set({ payloadFavorites: [...next] });
+          favorites = next;
+          renderPayloads();
+        } catch (error) { favorite.disabled = false; showError(error); }
+      });
+      footer.append(note, favorite, raw, encoded);
       card.append(code, footer);
       container.append(card);
     }

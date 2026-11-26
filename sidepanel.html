@@ -16,24 +16,49 @@
         </div>
       </div>
       <div class="header-tools">
-        <button id="surface-toggle" class="icon-button" title="Open Spectre in its own window" aria-label="Open Spectre in its own window">↗</button>
-        <label class="theme-picker" title="Colour scheme">
-          <span class="sr-only">Colour scheme</span>
+        <div class="appearance-tools" role="group" aria-label="Appearance">
+        <div class="theme-picker" title="Colour scheme">
+          <span>Theme</span>
           <select id="theme-select" aria-label="Colour scheme">
             <option value="spectre">Spectre</option>
             <option value="cobalt">Cobalt</option>
             <option value="violet">Violet</option>
             <option value="ember">Ember</option>
+            <option value="falcon">Falcon</option>
             <option value="light">Light</option>
           </select>
-        </label>
-        <button id="refresh-context" class="icon-button" title="Refresh active tab" aria-label="Refresh active tab">↻</button>
+        </div>
+        <div class="text-picker">
+          <span>Text size</span>
+          <select id="text-size-select" aria-label="Text size">
+            <option value="compact">Compact</option>
+            <option value="standard" selected>Standard</option>
+            <option value="large">Large</option>
+            <option value="extra-large">Extra large</option>
+          </select>
+        </div>
+        </div>
+        <div class="window-tools" role="group" aria-label="Target and window actions">
+          <button id="refresh-context" class="icon-button" title="Refresh target data" aria-label="Refresh target data">↻</button>
+          <button id="surface-toggle" class="icon-button" title="Open Spectre in its own window" aria-label="Open Spectre in its own window">↗</button>
+        </div>
       </div>
     </header>
 
     <div class="target-bar">
       <span class="status-dot" id="target-dot"></span>
-      <span id="target-origin">No HTTP target selected</span>
+      <div class="target-details">
+        <strong id="target-title">No target selected</strong>
+        <span id="target-origin">No HTTP target selected</span>
+      </div>
+      <div class="pin-control">
+        <label class="switch" title="Keep Spectre attached to this target tab">
+          <input id="pin-target" type="checkbox" role="switch" aria-label="Pin target tab" checked>
+          <span aria-hidden="true"></span>
+        </label>
+        <label for="pin-target">Pin target</label>
+      </div>
+      <button id="use-current-tab" class="button secondary small">Use current tab</button>
     </div>
 
     <div class="posture-bar" aria-label="Active security controls">
@@ -60,6 +85,14 @@
       <button class="nav-item" data-panel="payloads">Payloads</button>
     </nav>
 
+    <div class="reset-bar">
+      <button id="emergency-reset" class="button danger full">Emergency reset</button>
+      <p id="reset-result" class="hint" role="status" aria-live="polite">Disable role, headers, User-Agent and proxy.</p>
+    </div>
+    <div class="undo-bar">
+      <button id="undo-edit" class="button secondary small" disabled>Undo last edit</button>
+      <span id="undo-description" class="hint">No edits to undo.</span>
+    </div>
     <main>
       <section id="panel-inspect" class="panel active">
         <div class="section-heading">
@@ -433,6 +466,7 @@
         </label>
         <div class="field-grid payload-filter-row">
           <label>Category<select id="payload-category"></select></label>
+          <label class="favorite-filter"><input id="favorites-only" type="checkbox"> Favorites only</label>
           <button id="copy-all-payloads" class="button aligned">Copy all raw</button>
         </div>
         <div id="payload-list" class="payload-list"></div>
