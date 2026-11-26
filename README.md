@@ -61,6 +61,30 @@ to the target tab and scopes identity changes to the selected HTTP(S) origin.
   XSS, SQLi, SSTI, traversal/LFI, SSRF, command injection, API, authentication,
   parser, upload, header, and client-side testing.
 
+## Editing and portable profiles
+
+Editors warn before switching sections, selecting another record, closing an
+editor, or changing targets with unsaved form changes. Cancel returns to the
+form so you can save. Closing or reloading the panel also requests confirmation
+when there are unsaved changes.
+
+JWT **Verify or sign** tools and proxy **Advanced settings** start collapsed.
+Open them when you need HMAC operations, proxy credentials, or bypass rules.
+
+Use **Expand** below a text area for a larger editor. **Apply** returns the text
+to the original field; save that form to commit it. Cancel leaves the original
+value intact.
+
+In Payloads, open **Add custom payload** to save a category, probe, and note.
+Custom entries support search, favorites, copying, and deletion.
+
+Open **Profile export and import** at the bottom of the panel to download or
+import JSON. Exports contain roles, proxies, User-Agents, headers, custom
+payloads, and favorites. Credential and header values are excluded unless
+**Include credentials and header values** is selected. Custom payload text is
+always included. Imported profiles with existing names are skipped; new controls
+remain disabled. Invalid imports are rejected before any profiles are saved.
+
 ## Emergency reset
 
 **Emergency reset** restores the role cookie, clears the active role, disables

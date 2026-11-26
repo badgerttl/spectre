@@ -648,8 +648,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 #target-origin { flex: 1 1 100%; }
 .undo-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
 .undo-bar .hint { margin: 0; overflow-wrap: anywhere; }
-.favorite-filter { display: flex; align-items: center; gap: 6px; }
-.favorite-filter input { width: auto; }
+.favorite-filter { display: flex; align-items: center; gap: 8px; }
+.favorite-filter > label { margin: 0; cursor: pointer; }
 .payload-filter-row { grid-template-columns: minmax(0, 1fr); }
 .payload-action[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
 
@@ -788,3 +788,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 #target-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .target-details #target-origin { overflow-wrap: anywhere; white-space: normal; }
 .reset-bar { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+
+.expanded-editor { width: min(95vw, 1000px); }
+.expanded-editor textarea { height: 60dvh; min-height: 150px; }
+.expand-editor { margin-bottom: 8px; }
+summary { cursor: pointer; color: var(--text); }
+.import-file { margin: 0; }
+#export-secrets { width: auto; }
+.profile-transfer { margin-top: 24px; }
+
+.advanced-settings {
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.advanced-settings > summary { font-weight: 600; }
+.advanced-settings > summary .jwt-status-badge { display: inline-block; margin-left: 8px; vertical-align: middle; }
+.advanced-settings[open] > summary { margin-bottom: 12px; }

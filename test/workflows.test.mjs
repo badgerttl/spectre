@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import * as utils from '../src/utils.mjs';
+import * as profiles from '../src/profiles.mjs';
 
 // Run the worker's real workflow functions with an in-memory Chrome API.
 async function worker() {
   const source = await readFile(new URL('../src/background.mjs', import.meta.url), 'utf8');
   const local = { roles: [
-    { id: 'a', type: 'cookie', cookieName: 'session', cookieValue: 'role-a' },
-    { id: 'b', type: 'cookie', cookieName: 'session', cookieValue: 'role-b' }
+    { id: 'a', name: 'A', scope: 'origin', type: 'cookie', cookieName: 'session', cookieValue: 'role-a' },
+    { id: 'b', name: 'B', scope: 'origin', type: 'cookie', cookieName: 'session', cookieValue: 'role-b' }
   ], proxyProfiles: [{ id: 'p', name: 'Proxy', scheme: 'http', host: 'localhost', port: 8080, bypassList: [] }] };
   const session = {};
   let cookie = { name: 'session', value: 'original', domain: 'example.com', hostOnly: true, path: '/', secure: true, httpOnly: true, sameSite: 'lax', session: true };
@@ -34,10 +35,10 @@ async function worker() {
       get(_, callback) { callback({ value: effective, levelOfControl: blocked ? 'controlled_by_other_extensions' : 'controlled_by_this_extension' }); }
     } }
   };
-  const context = vm.createContext({ ...utils, chrome, URL, console, crypto });
+  const context = vm.createContext({ ...utils, ...profiles, structuredClone, chrome, URL, console, crypto });
   const declarations = source.slice(source.indexOf('const NETWORK_RULE_ID'), source.indexOf('chrome.runtime.onInstalled'));
   const functions = source.slice(source.indexOf('function queueContextMenuBuild'));
-  vm.runInContext(declarations + functions + '\nglobalThis.api = { activateRole, deactivateRole, restoreRoleCookie, activateProxy, deactivateProxy, emergencyReset };', context);
+  vm.runInContext(declarations + functions + '\nglobalThis.api = { activateRole, deactivateRole, restoreRoleCookie, activateProxy, deactivateProxy, emergencyReset, importProfiles };', context);
   return { ...context.api, local, session, cookie: () => cookie, blockProxy: () => { blocked = true; } };
 }
 
@@ -93,4 +94,22 @@ test('emergency reset disables controls while preserving saved profiles', async 
   assert.equal(w.local.proxyConfig.enabled, false);
   assert.equal(w.local.roles.length, 2);
   assert.equal(w.local.proxyProfiles.length, 1);
+});
+
+
+test('invalid profile imports leave stored profiles intact', async () => {
+  const w = await worker();
+  const before = JSON.stringify(w.local);
+  await assert.rejects(w.importProfiles({ format: 'spectre-profiles', version: 1, roles: [{ id: 'x', name: 'Bad', type: 'unsupported' }] }), /Unsupported authentication/);
+  assert.equal(JSON.stringify(w.local), before);
+});
+
+test('profile imports merge new roles without activating them', async () => {
+  const w = await worker();
+  await w.importProfiles({ format: 'spectre-profiles', version: 1,
+    roles: [{ id: 'new', name: 'Imported', type: 'bearer', scope: 'origin', token: '' }],
+    customPayloads: [{ id: 'payload', category: 'Mine', value: 'probe' }] });
+  assert.equal(w.local.roles.length, 3);
+  assert.equal(w.session.activeRole, undefined);
+  assert.equal(w.local.customPayloads[0].value, 'probe');
 });

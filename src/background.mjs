@@ -1,3 +1,4 @@
+import { readProfiles, mergeProfiles } from "./profiles.mjs";
 import {
   encodeBasicAuth,
   normaliseDomainScope,
@@ -332,6 +333,8 @@ async function handleTransformContextMenu(info, tab) {
 
 async function handleMessage(message) {
   switch (message?.action) {
+    case "importProfiles":
+      return importProfiles(message.data);
     case "emergencyReset":
       return emergencyReset();
     case "getState":
@@ -391,6 +394,29 @@ async function handleMessage(message) {
     default:
       throw new Error("Unknown extension action.");
   }
+}
+
+async function importProfiles(data) {
+  const incoming = readProfiles(data);
+  const current = await chrome.storage.local.get(["roles", "proxyProfiles", "networkConfig", "customPayloads", "payloadFavorites"]);
+  const roles = mergeProfiles(current.roles ?? [], normaliseRoles(incoming.roles));
+  const proxyProfiles = mergeProfiles(current.proxyProfiles ?? [], incoming.proxyProfiles);
+  const networkConfig = { ...DEFAULT_NETWORK_CONFIG, ...current.networkConfig };
+  networkConfig.userAgentProfiles = mergeProfiles(networkConfig.userAgentProfiles ?? [], incoming.userAgentProfiles);
+  networkConfig.headers = mergeProfiles(networkConfig.headers ?? [], incoming.headers);
+  validateRoles(roles);
+  validateProxyProfiles(proxyProfiles);
+  validateNetworkConfig(networkConfig);
+  for (const header of networkConfig.headers) validateHeader(header.name, header.value ?? "");
+  const customPayloads = [...(current.customPayloads ?? [])];
+  for (const payload of incoming.customPayloads) {
+    if (!customPayloads.some((item) => item.category === payload.category && item.value === payload.value)) {
+      customPayloads.push({ ...payload, id: crypto.randomUUID() });
+    }
+  }
+  await chrome.storage.local.set({ roles, proxyProfiles, networkConfig, customPayloads,
+    payloadFavorites: [...new Set([...(current.payloadFavorites ?? []), ...incoming.payloadFavorites])] });
+  return { roles: incoming.roles.length, proxies: incoming.proxyProfiles.length };
 }
 
 async function emergencyReset() {

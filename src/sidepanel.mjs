@@ -1,3 +1,5 @@
+import { installEditors } from "./editors.mjs";
+import { exportProfiles } from "./profiles.mjs";
 import { enhanceDropdown } from "./dropdown.mjs";
 import { changedRecords, cookieKey, favoriteKey } from "./history.mjs";
 import {
@@ -80,6 +82,8 @@ const USER_AGENT_PRESETS = [
   { id: "curl", label: "curl", value: "curl/8.10.1" }
 ];
 
+let editorProtection = null;
+let customPayloads = [];
 let activeTab = null;
 let pinEnabled = true;
 let pinnedTabId = null;
@@ -120,9 +124,10 @@ async function initialise() {
   new ResizeObserver(([entry]) => {
     document.documentElement.style.setProperty("--posture-height", `${entry.target.getBoundingClientRect().height}px`);
   }).observe($(".posture-bar"));
-  const preferences = await chrome.storage.local.get(["pinTargetEnabled", "payloadFavorites"]);
+  const preferences = await chrome.storage.local.get(["pinTargetEnabled", "payloadFavorites", "customPayloads"]);
   pinEnabled = preferences.pinTargetEnabled !== false;
   favorites = new Set(preferences.payloadFavorites || []);
+  customPayloads = preferences.customPayloads || [];
   const pinned = await chrome.storage.session.get(`pinnedTarget:${dockWindowId}`);
   pinnedTabId = pinned[`pinnedTarget:${dockWindowId}`] ?? null;
   populateUserAgentPresets();
@@ -132,9 +137,16 @@ async function initialise() {
   await refreshContext();
   await refreshState();
   await consumePendingTransform();
+  editorProtection = installEditors({ showError, confirmDiscard: () => confirmAction({
+    title: "Discard unsaved edits?", message: "You have unsaved changes in an editor.",
+    detail: "Cancel to return and save your work, or discard to continue.", confirmLabel: "Discard changes"
+  }) });
 }
 
 function bindEvents() {
+  $("#custom-payload-form").addEventListener("submit", saveCustomPayload);
+  $("#export-profiles").addEventListener("click", downloadProfiles);
+  $("#import-profiles").addEventListener("change", uploadProfiles);
   $("#emergency-reset").addEventListener("click", resetSecurityControls);
   $("#pin-target").addEventListener("change", async (event) => {
     try {
@@ -317,6 +329,11 @@ function bindEvents() {
     if (areaName === "local" && changes.uiTextSize) {
       applyTextSize(changes.uiTextSize.newValue);
     }
+    if (areaName === "local" && changes.customPayloads) {
+      customPayloads = changes.customPayloads.newValue || [];
+      populatePayloadCategories();
+      renderPayloads();
+    }
     if (areaName === "local" && changes.payloadFavorites) {
       favorites = new Set(changes.payloadFavorites.newValue || []);
       renderPayloads();
@@ -471,7 +488,12 @@ function renderUndo() {
 
 async function send(action, payload = {}) {
   const kind = COOKIE_EDITS.includes(action) ? "cookie" : STORAGE_EDITS.includes(action) ? "storage" : null;
-  if (!kind) return sendRaw(action, payload);
+  if (!kind) {
+    const result = await sendRaw(action, payload);
+    const form = { saveRoles: "role-form", saveProxyProfiles: "proxy-form", saveNetworkConfig: null }[action];
+    if (form) editorProtection?.saved(form);
+    return result;
+  }
   if (editBusy) throw new Error("Wait for the current edit to finish.");
   editBusy = true;
   renderUndo();
@@ -480,6 +502,7 @@ async function send(action, payload = {}) {
   try {
     const before = await snapshotEdit(kind, target);
     const result = await sendRaw(action, target);
+    editorProtection?.saved(kind === "cookie" ? "cookie-form" : "storage-form");
     // The new edit supersedes the previous undo, even if the follow-up read fails.
     undoEntry = null;
     const after = await snapshotEdit(kind, target);
@@ -542,6 +565,7 @@ async function refreshContext(withNotice = false, useCurrent = false) {
       : { active: true, lastFocusedWindow: true };
     [tab] = await chrome.tabs.query(query);
   }
+  if (previous && (previous.id !== tab?.id || previous.url !== tab?.url) && editorProtection && !await editorProtection.ask()) return;
   activeTab = tab ?? null;
   if (previous && (previous.id !== activeTab?.id || previous.url !== activeTab?.url)) {
     closeCookieEditor();
@@ -1565,6 +1589,7 @@ function openUserAgentEditor(profile = null) {
 }
 
 function closeUserAgentEditor() {
+  editorProtection?.saved("user-agent-form");
   editingUserAgentId = null;
   $("#user-agent-form").classList.add("hidden");
 }
@@ -1691,6 +1716,7 @@ function openHeaderEditor(header = null) {
 }
 
 function closeHeaderEditor() {
+  editorProtection?.saved("header-form");
   editingHeaderId = null;
   $("#header-form").classList.add("hidden");
 }
@@ -2120,24 +2146,80 @@ async function deactivateRole() {
   }
 }
 
+function payloadGroups() {
+  const groups = PAYLOADS.map((group) => ({ ...group, payloads: [...group.payloads] }));
+  for (const payload of customPayloads) {
+    let group = groups.find((item) => item.category === payload.category);
+    if (!group) { group = { category: payload.category, payloads: [] }; groups.push(group); }
+    group.payloads.push(payload);
+  }
+  return groups;
+}
+
+async function saveCustomPayload(event) {
+  event.preventDefault();
+  try {
+    const payload = { id: crypto.randomUUID(), category: $("#custom-payload-category").value.trim(),
+      value: $("#custom-payload-value").value, note: $("#custom-payload-note").value.trim() };
+    if (!payload.category || !payload.value.trim()) throw new Error("Enter a category and payload.");
+    await chrome.storage.local.set({ customPayloads: [...customPayloads, payload] });
+    $("#custom-payload-value").value = "";
+    $("#custom-payload-note").value = "";
+    editorProtection?.saved("custom-payload-form");
+    showToast("Custom payload saved.");
+  } catch (error) { showError(error); }
+}
+
+async function downloadProfiles() {
+  try {
+    const state = await send("getState");
+    const saved = await chrome.storage.local.get(["customPayloads", "payloadFavorites"]);
+    const data = exportProfiles({ ...state, ...saved, ...state.networkConfig }, $("#export-secrets").checked);
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "spectre-profiles.json";
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    showToast("Profiles exported.");
+  } catch (error) { showError(error); }
+}
+
+async function uploadProfiles(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  try {
+    if (file.size > 5 * 1024 * 1024) throw new Error("Profile files must be smaller than 5 MB.");
+    const data = JSON.parse(await file.text());
+    if (!await confirmAction({ title: "Import profiles?", message: "Merge new profiles and payloads from this file?", detail: "Existing names are kept. Imported controls remain disabled.", confirmLabel: "Import" })) return;
+    await send("importProfiles", { data });
+    await refreshState();
+    showToast("Profiles imported. Existing profiles were kept.");
+  } catch (error) { showError(error); }
+  finally { event.target.value = ""; }
+}
+
 function populatePayloadCategories() {
   const select = $("#payload-category");
+  const selected = select.value;
+  select.replaceChildren();
   const all = document.createElement("option");
   all.value = "all";
   all.textContent = "All categories";
   select.append(all);
-  for (const group of PAYLOADS) {
+  for (const group of payloadGroups()) {
     const option = document.createElement("option");
     option.value = group.category;
     option.textContent = group.category;
     select.append(option);
   }
+  if ([...select.options].some((option) => option.value === selected)) select.value = selected;
 }
 
 function filteredPayloadGroups() {
   const query = $("#payload-search").value.trim().toLowerCase();
   const category = $("#payload-category").value || "all";
-  return PAYLOADS
+  return payloadGroups()
     .filter((group) => category === "all" || group.category === category)
     .map((group) => ({
       ...group,
@@ -2207,6 +2289,18 @@ function renderPayloads() {
         } catch (error) { favorite.disabled = false; showError(error); }
       });
       footer.append(note, favorite, raw, encoded);
+      if (payload.id) {
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "payload-action";
+        remove.textContent = "Delete";
+        remove.addEventListener("click", async () => {
+          if (!await confirmAction({ title: "Delete custom payload?", message: "Remove this payload from your library?", confirmLabel: "Delete payload" })) return;
+          try { await chrome.storage.local.set({ customPayloads: customPayloads.filter((item) => item.id !== payload.id) }); }
+          catch (error) { showError(error); }
+        });
+        footer.append(remove);
+      }
       card.append(code, footer);
       container.append(card);
     }

@@ -6,7 +6,7 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "check": "node --check src/background.mjs && node --check src/sidepanel.mjs && node --check src/utils.mjs && node --check src/payloads.mjs && node --check src/dropdown.mjs && node --check src/history.mjs",
+    "check": "node --check src/background.mjs && node --check src/sidepanel.mjs && node --check src/utils.mjs && node --check src/payloads.mjs && node --check src/dropdown.mjs && node --check src/history.mjs && node --check src/editors.mjs && node --check src/profiles.mjs",
     "validate": "npm run check && npm test"
   },
   "engines": {

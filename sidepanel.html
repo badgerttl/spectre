@@ -284,10 +284,11 @@
 
         <div class="divider"></div>
 
-        <div class="section-heading">
-          <div><p class="eyebrow">HMAC operations</p><h2>Verify or Sign</h2></div>
-          <span id="jwt-signature-status" class="jwt-status-badge neutral">Unverified</span>
-        </div>
+        <details class="advanced-settings">
+          <summary>
+            <span>Verify or sign</span>
+            <span id="jwt-signature-status" class="jwt-status-badge neutral">Unverified</span>
+          </summary>
         <label>HMAC secret
           <input id="jwt-secret" type="password" autocomplete="off" spellcheck="false">
         </label>
@@ -296,6 +297,7 @@
           <button id="jwt-sign" class="button">Sign edited token</button>
         </div>
         <p class="hint">Supports HS256, HS384, and HS512. The secret is kept only in this view and is never stored.</p>
+        </details>
 
         <label>Result token
           <textarea id="jwt-result" rows="5" readonly spellcheck="false"></textarea>
@@ -385,11 +387,15 @@
           </div>
           <label>Host or proxy URL<input id="proxy-host" value="127.0.0.1" placeholder="127.0.0.1 or http://127.0.0.1:8080"></label>
           <p class="hint">A pasted proxy URL overrides the Scheme and Port fields.</p>
+          <details class="advanced-settings">
+            <summary>Advanced settings</summary>
+            <p class="hint">Optional credentials and destinations that bypass the proxy.</p>
           <div class="field-grid two">
             <label>Username<input id="proxy-username" autocomplete="off"></label>
             <label>Password<input id="proxy-password" type="password" autocomplete="off"></label>
           </div>
           <label>Bypass list<textarea id="proxy-bypass" rows="3" placeholder="localhost&#10;127.0.0.1&#10;&lt;local&gt;"></textarea></label>
+          </details>
           <div class="actions">
             <button type="submit" class="button">Save proxy</button>
             <button type="button" id="delete-proxy" class="button danger">Delete</button>
@@ -460,19 +466,51 @@
           <div><p class="eyebrow">Testing library</p><h2>Payloads</h2></div>
           <span id="payload-count" class="counter">0</span>
         </div>
+        <details class="editor-card">
+          <summary>Add custom payload</summary>
+          <form id="custom-payload-form">
+            <label>Category<input id="custom-payload-category" value="My payloads" required maxlength="100"></label>
+            <label>Payload<textarea id="custom-payload-value" rows="4" required></textarea></label>
+            <label>Note<input id="custom-payload-note" maxlength="500"></label>
+            <button class="button" type="submit">Save payload</button>
+          </form>
+        </details>
         <label class="search-field">
           <span class="sr-only">Search payloads</span>
           <input id="payload-search" type="search" placeholder="Search payloads and notes…">
         </label>
         <div class="field-grid payload-filter-row">
           <label>Category<select id="payload-category"></select></label>
-          <label class="favorite-filter"><input id="favorites-only" type="checkbox"> Favorites only</label>
+          <div class="favorite-filter">
+            <label class="switch">
+              <input id="favorites-only" type="checkbox" role="switch" aria-label="Favorites only">
+              <span aria-hidden="true"></span>
+            </label>
+            <label for="favorites-only">Favorites only</label>
+          </div>
           <button id="copy-all-payloads" class="button aligned">Copy all raw</button>
         </div>
         <div id="payload-list" class="payload-list"></div>
         <p class="hint">Non-destructive probes only. Validate impact and scope before use.</p>
       </section>
+      <details class="editor-card profile-transfer">
+        <summary>Profile export and import</summary>
+        <p class="hint">Transfer roles, proxies, headers, User-Agents, favorites and custom payloads. Imports merge new names and keep existing profiles. Imported controls stay off.</p>
+        <label class="check-row"><input id="export-secrets" type="checkbox"> Include credentials and header values</label>
+        <p class="hint">Custom payload text is included. Check it for sensitive data before sharing.</p>
+        <div class="actions">
+          <button id="export-profiles" class="button secondary" type="button">Export JSON</button>
+          <label class="import-file">Import JSON<input id="import-profiles" type="file" accept=".json,application/json"></label>
+        </div>
+      </details>
     </main>
+    <dialog id="expanded-editor" class="app-dialog expanded-editor" aria-labelledby="expanded-editor-title">
+      <form method="dialog" class="dialog-card">
+        <h2 id="expanded-editor-title">Expanded editor</h2>
+        <label>Value<textarea id="expanded-editor-value" spellcheck="false"></textarea></label>
+        <div class="actions"><button value="cancel" class="button secondary">Cancel</button><button id="expanded-editor-apply" value="apply" class="button">Apply</button></div>
+      </form>
+    </dialog>
 
     <div id="selection-transform-menu" class="selection-menu hidden" role="menu" aria-label="Send selection to transform">
       <p id="selection-transform-title">Send selection to</p>
